@@ -1,0 +1,39 @@
+{
+  "name": "create-harness-vibe-coding",
+  "version": "0.1.2",
+  "description": "Scaffold a vibe-coding agentic harness — CLAUDE.md, docs/, .claude skeleton ready for ECC agents/skills/rules",
+  "type": "module",
+  "bin": {
+    "create-harness-vibe-coding": "./bin/create-harness-vibe-coding.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "templates/"
+  ],
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.7.0",
+    "picocolors": "^1.1.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LiWeny16/q-profit.git",
+    "directory": "create-harness-vibe-coding"
+  },
+  "keywords": [
+    "claude-code",
+    "harness",
+    "scaffold",
+    "vibe-coding",
+    "agentic",
+    "ecc",
+    "superpowers"
+  ],
+  "license": "MIT"
+}
