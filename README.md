@@ -1,51 +1,8 @@
-<!--
-  Structured data for AI search engines (GEO) and Google (SEO)
-  Schema: SoftwareApplication + HowTo
--->
-<script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@type": "SoftwareApplication",
-  "name": "create-harness-vibe-coding",
-  "applicationCategory": "DeveloperApplication",
-  "operatingSystem": "Any",
-  "description": "Zero-config scaffold that provisions a vibe-coding agentic harness in under 4 seconds. Generates CLAUDE.md, docs/, .claude/ skeleton — ready for ECC agents, skills, and rules.",
-  "url": "https://github.com/zingspark/create-harness-vibe-coding",
-  "author": { "@type": "Person", "name": "zingspark" },
-  "license": "https://opensource.org/licenses/MIT",
-  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-  "datePublished": "2026-06-04",
-  "version": "0.1.2",
-  "keywords": "claude-code,harness,scaffold,vibe-coding,agentic,ECC,superpowers,agent-workflow,CLAUDE.md",
-  "installUrl": "https://www.npmjs.com/package/create-harness-vibe-coding",
-  "sameAs": [
-    "https://www.npmjs.com/package/create-harness-vibe-coding",
-    "https://github.com/zingspark/create-harness-vibe-coding"
-  ]
-}
-</script>
-
-<script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@type": "HowTo",
-  "name": "Scaffold an Agentic Harness in 4 Seconds",
-  "description": "One command provisions a full agentic coding harness with architecture docs, TDD workflows, and ECC-ready skeleton.",
-  "step": [
-    { "@type": "HowToStep", "position": 1, "text": "Run npx create-harness-vibe-coding@latest my-project" },
-    { "@type": "HowToStep", "position": 2, "text": "cd my-project && claude" },
-    { "@type": "HowToStep", "position": 3, "text": "Tell Claude: 'Read SETUP.md and initialize agents/skills/rules from ECC'" }
-  ],
-  "totalTime": "PT4S"
-}
-</script>
-
 <p align="center">
-  <img src="https://img.shields.io/npm/v/create-harness-vibe-coding?color=blue&label=npm" alt="npm version">
-  <img src="https://img.shields.io/npm/dt/create-harness-vibe-coding?color=green" alt="downloads">
-  <img src="https://img.shields.io/github/stars/zingspark/create-harness-vibe-coding?style=social" alt="stars">
-  <img src="https://img.shields.io/npm/l/create-harness-vibe-coding" alt="license">
+  <img src="https://img.shields.io/npm/v/create-harness-vibe-coding?color=blue" alt="npm version">
   <img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="node">
+  <img src="https://img.shields.io/npm/l/create-harness-vibe-coding" alt="license">
+  <img src="https://img.shields.io/github/stars/zingspark/create-harness-vibe-coding?style=social" alt="stars">
 </p>
 
 <h1 align="center">⚡ create-harness-vibe-coding</h1>
@@ -92,17 +49,16 @@ Every Claude Code project has the same cold-start problem:
 
 ```mermaid
 graph LR
-    A[User runs npx] --> B[Scaffold provisions]
-    B --> C[CLAUDE.md + docs/ + .claude/]
-    C --> D[User starts Claude Code]
-    D --> E[Claude reads SETUP.md]
-    E --> F[Pulls agents/skills/rules from ECC]
-    F --> G[Project ready — TDD loop active]
+    A[npx scaffold] --> B[CLAUDE.md + docs/ + .claude/]
+    B --> C[Start Claude Code]
+    C --> D[Claude reads SETUP.md]
+    D --> E[Pulls agents/skills/rules from ECC]
+    E --> F[Project ready — TDD loop active]
 ```
 
 ### What happens after `npx`:
 
-1. **CLAUDE.md** — Agent reads this first. A role-based routing table sends each agent to the right docs.
+1. **CLAUDE.md** — Agent reads this first. Role-based routing table sends each agent to the right docs.
 2. **docs/architecture.md** — Clean architecture layers. Harness runs the shell; domain defines the business.
 3. **docs/agent-workflow.md** — TDD loop, subagent roles, write set rules, conflict resolution.
 4. **docs/data-flow.md** — Every event's normal path + failure branches — the #1 doc AI fabricates without.
@@ -160,14 +116,17 @@ my-project/
 
 ---
 
-## 🔧 Advanced
+## 🔧 Usage
 
 ```bash
+# Interactive mode
+npx create-harness-vibe-coding@latest
+
 # Non-interactive (CI/CD)
 npx create-harness-vibe-coding@latest my-app ./dist/my-app
 
-# Install & initialize in one session
-npx create-harness-vibe-coding@latest my-app && cd my-app && claude
+# Always get the latest version
+npx create-harness-vibe-coding@latest my-project
 ```
 
 ### After scaffolding, tell Claude:
@@ -189,8 +148,7 @@ npx create-harness-vibe-coding@latest my-app && cd my-app && claude
 | Unpacked | 49.4 kB |
 | Dependencies | 2 (@clack/prompts, picocolors) |
 | Node requirement | ≥ 18 |
-| Zero runtime dependencies after scaffold | ✅ |
-| Works offline after npx cache | ✅ |
+| Zero runtime deps after scaffold | ✅ |
 
 ---
 
