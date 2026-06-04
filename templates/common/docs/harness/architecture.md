@@ -1,87 +1,90 @@
 # Harness Architecture — {{projectName}}
 
-> **职责**：定义系统的分层结构、组件全景和关键设计决策。
-> **不写什么**：代码细节（AI 能读代码）、API 文档（放 docstring）。
+> **Responsibility**: Defines the system layering structure, component overview, and key design decisions.
+> **Does NOT cover**: Code details (AI can read code), API documentation (placed in docstrings).
 >
-> 哲学来源：arc42 第 5 章 (Building Block View) + C4 Model Level 3 (Component) + matklad 的轻量 ARCHITECTURE.md。
+> Philosophical sources: arc42 Chapter 5 (Building Block View) + C4 Model Level 3 (Component) + matklad's lightweight ARCHITECTURE.md.
 
 ---
 
-## 1. 分层规则
+## 1. Layering Rules
 
-<!-- 这是整个架构最硬性的约束。每个层的"允许依赖什么"必须明确。 -->
+<!-- This is the hardest constraint in the entire architecture. Each layer's "allowed dependencies" must be explicit. -->
 
 ```
 ┌──────────────────────────┐
-│     interfaces/          │  ← 用户入口（CLI / API / UI）
-│     可依赖: harness       │
+│     interfaces/          │  ← User entry (CLI / API / UI)
+│     May depend on: harness│
 ├──────────────────────────┤
-│     harness/             │  ← 通用运行外壳：编排、安全、审计、调度
-│     可依赖: application   │    不包含业务规则
+│     harness/             │  ← Generic runtime shell: orchestration,
+│     May depend on:        │     security, auditing, scheduling
+│       application         │     Contains no business rules
 ├──────────────────────────┤
-│     application/         │  ← 业务用例编排
-│     可依赖: domain        │
+│     application/         │  ← Business use-case orchestration
+│     May depend on: domain │
 ├──────────────────────────┤
-│     domain/              │  ← 纯业务对象 + 端口协议
-│     只依赖: 标准库         │    不依赖任何外部实现
+│     domain/              │  ← Pure business objects + port protocols
+│     Only depends on:      │     Depends on no external implementations
+│       standard library    │
 ├──────────────────────────┤
-│     infrastructure/      │  ← 适配器实现（数据源、外部服务）
-│     实现 domain 的端口     │
+│     infrastructure/      │  ← Adapter implementations (data sources,
+│     Implements domain     │     external services)
+│       ports               │
 └──────────────────────────┘
 ```
 
-**硬约束**：
-- domain 绝不导入 infrastructure/ 或 interfaces/
-- application 只依赖 domain
-- harness 协调流程但不包含领域业务规则
-- 所有跨层通信通过 domain 定义的端口协议
+**Hard Constraints**:
+- domain must never import infrastructure/ or interfaces/
+- application only depends on domain
+- harness coordinates workflows but contains no domain business rules
+- All cross-layer communication goes through port protocols defined in domain
 
 ---
 
-## 2. Harness 核心组件
+## 2. Harness Core Components
 
 ### 2.1 Runner / Loop
 
-- **职责**：驱动一次任务从输入到完成：加载上下文、调用 application use-case、处理停止条件。
-- **设计决策**：
-  - Runner 只编排，不解释领域含义 — 为什么：保持 harness 可复用于不同业务域
-  - 停止条件显式建模 — 为什么：防止 agent loop 无限运行或静默半完成
-- **不负责**：业务规则、领域对象创建细节、外部服务实现
+- **Responsibility**: Drives a task from input to completion: loading context, calling application use-cases, handling stop conditions.
+- **Design Decision**:
+  - Runner only orchestrates, does not interpret domain meaning — Rationale: keeps harness reusable across different business domains
+  - Stop conditions are explicitly modeled — Rationale: prevents agent loops from running indefinitely or silently half-completing
+- **Does NOT handle**: Business rules, domain object creation details, external service implementations
 
 ### 2.2 Permission Policy
 
-- **职责**：决定某个工具、文件、网络或外部动作是否允许执行。
-- **设计决策**：
-  - 默认拒绝高风险动作，允许规则显式声明 — 为什么：底座要先保证安全边界
-- **不负责**：判断业务动作是否正确
+- **Responsibility**: Decides whether a given tool, file, network, or external action is allowed to execute.
+- **Design Decision**:
+  - High-risk actions are denied by default, allow rules are explicitly declared — Rationale: the platform must first guarantee security boundaries
+- **Does NOT handle**: Judging whether a business action is correct
 
 ### 2.3 Event Bus / Audit Trail
 
-- **职责**：记录任务生命周期、工具调用、失败、人工审批和最终结果。
-- **设计决策**：
-  - 事件追加写入，审计记录不可原地改写 — 为什么：方便回放、排错和复盘
-- **不负责**：替业务系统保存最终数据
+- **Responsibility**: Records task lifecycle, tool invocations, failures, human approvals, and final results.
+- **Design Decision**:
+  - Events are append-only, audit records cannot be overwritten in place — Rationale: facilitates replay, debugging, and post-mortem analysis
+- **Does NOT handle**: Saving final data on behalf of business systems
 
 ### 2.4 State / Checkpoint Store
 
-- **职责**：保存可恢复状态、上下文摘要、任务进度和中断点。
-- **设计决策**：
-  - 状态格式必须可序列化 — 为什么：便于 replay、resume、测试和迁移
-- **不负责**：长期业务数据库建模
+- **Responsibility**: Saves recoverable state, context summaries, task progress, and interrupt points.
+- **Design Decision**:
+  - State format must be serializable — Rationale: enables replay, resume, testing, and migration
+- **Does NOT handle**: Long-term business database modeling
 
 ### 2.5 Tool Registry
 
-- **职责**：注册可调用工具及其输入/输出契约、权限标签和错误语义。
-- **设计决策**：
-  - 工具契约写清输入、输出、错误和副作用 — 为什么：降低 agent 误用工具的概率
-- **不负责**：工具内部业务实现
+- **Responsibility**: Registers callable tools along with their input/output contracts, permission labels, and error semantics.
+- **Design Decision**:
+  - Tool contracts explicitly specify input, output, errors, and side effects — Rationale: reduces the probability of agent tool misuse
+- **Does NOT handle**: Internal business implementation of tools
 
 ---
 
-## 3. 架构约束（不可协商）
+## 3. Architectural Constraints (Non-Negotiable)
 
-- `domain/` 只定义业务模型、业务不变量和端口协议，不导入 `harness/`、`infrastructure/` 或 `interfaces/`。
-- `harness/` 可以协调流程、安全门、审计和停止条件，但不能决定业务含义。
-- 所有跨层外部能力都通过 `domain` 端口表达，适配器实现放在 `infrastructure/`。
-- 拒绝和失败必须能被测试或在 feature doc 中写明人工验证。
-- 审计事件追加记录，不原地改写。
+- `domain/` only defines business models, business invariants, and port protocols; does not import `harness/`, `infrastructure/`, or `interfaces/`.
+- `harness/` may orchestrate workflows, security gates, auditing, and stop conditions, but must not determine business meaning.
+- All cross-layer external capabilities are expressed through `domain` ports; adapter implementations live in `infrastructure/`.
+- Rejections and failures must be testable or documented with manual verification steps in the feature doc.
+- Audit events are append-only, never overwritten in place.

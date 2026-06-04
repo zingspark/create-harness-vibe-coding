@@ -5,81 +5,86 @@
   <img src="https://img.shields.io/github/stars/zingspark/create-harness-vibe-coding?style=social" alt="stars">
 </p>
 
-<h1 align="center">⚡ create-harness-vibe-coding</h1>
+<h1 align="center">create-harness-vibe-coding</h1>
 <p align="center">
-  <b>4 seconds from zero to a production-grade agentic harness.</b><br>
-  <sub>CLAUDE.md → docs/ → .claude/ → tests/ — ECC-ready, Superpowers-compatible.</sub>
+  <b>0-1 product harness scaffold for AI-assisted engineering.</b><br>
+  <sub>Idea -> Research -> PRD -> Architecture -> docs/harness/PLAN.md -> Build -> Verify -> Feedback.</sub>
 </p>
 
 ---
 
-## 🎯 One Command
+## One Command
 
 ```bash
 npx create-harness-vibe-coding@latest my-project
 ```
 
-| What You Get | Count |
-|-------------|-------|
-| Architecture docs (layers, data flow, state machines, port contracts) | 9 docs |
-| Agent definitions (code-reviewer, risk-auditor, etc.) | ECC-ready skeleton |
-| Workflow skills (TDD, backtest, data pipeline) | ECC-ready skeleton |
-| Coding rules (universal + language-specific) | common.md included |
-| Settings & hooks (permissions, automation) | pre-configured |
-| **Total files provisioned** | **17 docs + configs** |
+| What You Get | Purpose |
+|-------------|---------|
+| `CLAUDE.md` + `docs/README.md` | Short entry and dynamic doc router |
+| `docs/harness/PLAN.md` | Active execution state for multi-step work |
+| Research + PRD templates | Clarify idea, scope, non-goals, acceptance criteria |
+| Research protocol | Route research agents, source search, and fallback tools |
+| Built-in common agents | Research, planning, architecture, testing, implementation, debugging, review, verification |
+| Harness architecture docs | Boundaries, ports, data flow, state machines |
+| Dispatch protocol | Lightweight parallel-agent coordination without a scheduler |
+| Extension contract | Keep stack-specific agents and skills compatible |
+| Context-loading protocol | Inject only the right docs into each subagent |
+| Skill-style loaders | `.claude/skills/*` route lifecycle, context, and build loops |
+| Harness validator | Checks required files and unresolved project placeholders |
+| `.claude/` skeleton | Built-in common agents plus room for stack-specific assets |
 
 ---
 
-## 🚀 Why This Exists
+## Why This Exists
 
-Every Claude Code project has the same cold-start problem:
+Most 0-1 AI coding projects fail before code quality matters:
 
-| Without Harness | With `create-harness-vibe-coding` |
+| Without Harness | With This Scaffold |
 |---|---|
-| ❌ Agents skip docs, hallucinate behavior | ✅ CLAUDE.md routes agents to exact docs by role |
-| ❌ No TDD enforcement — agents ship untested code | ✅ agent-workflow.md enforces RED-GREEN-REFACTOR |
-| ❌ Architecture boundaries blur over time | ✅ domain/ports.md locks layer contracts |
-| ❌ State machines live in someone's head | ✅ state-machines.md documents every transition |
-| ❌ Cross-session memory lost | ✅ MEMORY.md + self-learning system |
-| ❌ 2+ hours to set up project structure | ✅ **4 seconds** |
+| Idea jumps straight to code | lifecycle forces research, PRD, and scope |
+| Agent reads too much context | docs router loads only the needed harness file |
+| Subagents get vague prompts | context-loading packs define role, boundaries, and return format |
+| Process drift is invisible | validator checks core harness readiness |
+| Architecture drifts silently | ports, data-flow, and state docs mark boundary changes |
+| Tests come after implementation | workflow requires failing test or manual check first |
 
 ---
 
-## 🧠 How It Works
+## How It Works
 
-```mermaid
-graph LR
-    A[npx scaffold] --> B[CLAUDE.md + docs/ + .claude/]
-    B --> C[Start Claude Code]
-    C --> D[Claude reads SETUP.md]
-    D --> E[Pulls agents/skills/rules from ECC]
-    E --> F[Project ready — TDD loop active]
+```text
+npx scaffold
+-> Claude reads SETUP.md
+-> docs router selects only needed harness docs
+-> PRD/research/architecture/PLAN are filled
+-> first vertical slice is built, tested, reviewed, and fed back
+-> validator catches missing project facts before release
 ```
 
-### What happens after `npx`:
+### Harness idea
 
-1. **CLAUDE.md** — Agent reads this first. Role-based routing table sends each agent to the right docs.
-2. **docs/architecture.md** — Clean architecture layers. Harness runs the shell; domain defines the business.
-3. **docs/agent-workflow.md** — TDD loop, subagent roles, write set rules, conflict resolution.
-4. **docs/data-flow.md** — Every event's normal path + failure branches — the #1 doc AI fabricates without.
-5. **docs/state-machines.md** — Every stateful component. Transition table. Illegal transitions explicitly denied.
-6. **.claude/settings.json** — Permissions pre-configured (allow git/npm/pytest, deny rm/sudo/curl). Hooks ready.
-7. **SETUP.md** — Temporary guide. Claude reads it, pulls agents/skills/rules from [ECC](https://github.com/affaan-m/ECC). User deletes it after.
+The scaffold does not prebuild business code. It gives agents a compact process for turning an idea into a verified product slice.
 
 ---
 
-## 📦 What's Inside
+## What's Inside
 
 ```
 my-project/
-├── CLAUDE.md              ← Role-based doc navigation + memory/self-learning
+├── CLAUDE.md              ← Short startup rules + context discipline
 ├── AGENTS.md              ← Coding agent entry
 ├── MEMORY.md              ← Cross-session resource index
 ├── SETUP.md               ← Temporary init guide (delete after setup)
 ├── .gitignore
 ├── docs/
-│   ├── README.md          ← Project doc entry point
+│   ├── README.md          ← Dynamic doc router
 │   ├── harness/
+│   │   ├── PLAN.md               ← Active execution plan and handoffs
+│   │   ├── lifecycle.md          ← 0-1 product flow
+│   │   ├── context-loading.md    ← Subagent context packs
+│   │   ├── dispatch.md           ← Lightweight parallel-agent protocol
+│   │   ├── extension.md          ← Stack-specific agent/skill contract
 │   │   ├── architecture.md       ← Layer rules, components, ADRs
 │   │   ├── agent-workflow.md     ← TDD loop, subagent roles, write sets
 │   │   ├── data-flow.md          ← Event lifecycle: normal + failure paths
@@ -89,34 +94,34 @@ my-project/
 │   ├── features/
 │   │   └── _template.md          ← Kiro-lite feature doc template
 │   └── research/
+│       ├── README.md             ← Research-agent protocol and tool fallbacks
 │       ├── PRD.md                ← MVP scope & acceptance template
-│       └── scaffolds.md          ← Tech research & decision record
+│       └── research-results.md   ← Tech research results and decisions
+├── scripts/
+│   └── validate-harness.mjs      ← Lightweight harness readiness check
 ├── .claude/
-│   ├── settings.json     ← Permissions + hooks
-│   ├── agents/           ← Pull from ECC
-│   ├── skills/           ← Pull from ECC
-│   ├── hooks/            ← Configure as needed
+│   ├── settings.json     ← Base permissions
+│   ├── agents/           ← Built-in common agents + stack-specific agents later
+│   ├── skills/           ← Harness loaders + stack-specific skills
+│   ├── hooks/            ← Configure automation after stack choice
 │   └── rules/ecc/
-│       └── common.md     ← Universal coding rules (always active)
+│       └── common.md     ← Universal coding rules
 └── tests/                ← Your test suite goes here
 ```
 
 ---
 
-## 🌐 Ecosystem Compatibility
+## Ecosystem Compatibility
 
-| Platform | Status |
-|----------|--------|
-| [ECC](https://github.com/affaan-m/ECC) (206K+ ★) | ✅ Agents, skills, rules auto-pull |
-| [Superpowers](https://github.com/obra/superpowers) (185K+ ★) | ✅ `/plugin install superpowers` |
-| [awesome-claude-code-config](https://github.com/Mizoreww/awesome-claude-code-config) | ✅ Rules & self-learning configs |
-| [claude-toolbox](https://github.com/serpro69/claude-toolbox) | ✅ Multi-language skills |
-| Claude Code | ✅ Native settings.json + hooks |
-| Codex / Cursor / Gemini CLI | ✅ Compatible (docs-only pattern) |
+| Platform | Fit |
+|----------|-----|
+| Claude Code | Native `CLAUDE.md`, `.claude/settings.json`, agents, skills, hooks |
+| Codex / Cursor / Gemini CLI | Works as docs-first process scaffold |
+| ECC / Superpowers / toolboxes | Optional source for stack-specific agents, skills, and rules |
 
 ---
 
-## 🔧 Usage
+## Usage
 
 ```bash
 # Interactive mode
@@ -132,38 +137,30 @@ npx create-harness-vibe-coding@latest my-project
 ### After scaffolding, tell Claude:
 
 ```
-"Read SETUP.md. This is a Python quant project. Pull agents, skills, and rules from ECC."
-"Read SETUP.md. This is a React TypeScript app. I need TDD workflow and code review."
-"Read SETUP.md. This is a Go microservice. Set up matching agents and testing skills."
+"Read SETUP.md. Bootstrap this project from idea to first vertical slice."
+"Read SETUP.md. This is a React TypeScript SaaS idea. Clarify PRD first, then plan the first slice."
+"Read SETUP.md. This is a Python data product. Research the stack, define the MVP, then create docs/harness/PLAN.md."
 ```
 
 ---
 
-## 📊 Performance
+## Footprint
 
 | Metric | Value |
 |--------|-------|
-| Cold install + scaffold | < 4s |
-| Package size | 19.9 kB |
-| Unpacked | 49.4 kB |
-| Dependencies | 2 (@clack/prompts, picocolors) |
-| Node requirement | ≥ 18 |
-| Zero runtime deps after scaffold | ✅ |
+| Runtime after scaffold | none |
+| Dependencies | 2 (`@clack/prompts`, `picocolors`) |
+| Node requirement | >= 18 |
+| Generated code | none until the product stack is chosen |
 
 ---
 
-## 👥 Contributing
+## Contributing
 
 PRs welcome. The template docs live in `templates/common/` — edit them to change what gets scaffolded.
 
 ---
 
-## 📄 License
+## License
 
 MIT © [zingspark](https://github.com/zingspark)
-
----
-
-<p align="center">
-  <sub>Built for the vibe-coding era. Scaffold fast, build faster.</sub>
-</p>

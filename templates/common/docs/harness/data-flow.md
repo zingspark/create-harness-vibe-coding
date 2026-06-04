@@ -1,23 +1,23 @@
-# 数据流 — {{projectName}}
+# Data Flow — {{projectName}}
 
-> **职责**：定义每个事件/请求的完整生命周期——正常路径 + 所有失败分支。
-> **这是整个 docs 里最重要的文件**——AI 实现时最常编造的就是失败路径行为。写清楚就不会。
+> **Purpose**: Define the complete lifecycle of each event/request — happy path + all failure branches.
+> **This is the most important file in the entire docs folder** — what AI most often invents during implementation is failure-path behavior. Write it clearly and it won't.
 >
-> 哲学来源：EventCatalog 模式 + arc42 第 6 章 (Runtime View)。
+> Philosophy source: EventCatalog pattern + arc42 Chapter 6 (Runtime View).
 
 ---
 
-## 1. 事件目录
+## 1. Event Catalog
 
-| 事件类型 | 生产者 | 消费者 | Payload 关键字段 | 投递语义 | 排序要求 |
+| Event Type | Producer | Consumer | Payload Key Fields | Delivery Semantics | Ordering Requirements |
 | --- | --- | --- | --- | --- | --- |
 | `{{EVENT_1}}` | `{{PRODUCER}}` | `{{CONSUMERS}}` | `{{KEY_FIELDS}}` | {{SEMANTICS}} | {{ORDERING}} |
 
 ---
 
-## 2. 核心流程
+## 2. Core Flows
 
-### 2.1 正常路径
+### 2.1 Happy Path
 
 ```mermaid
 sequenceDiagram
@@ -37,23 +37,23 @@ sequenceDiagram
     Runner-->>Caller: {{FINAL_RESULT}}
 ```
 
-### 2.2 失败路径
+### 2.2 Failure Paths
 
-每个失败点必须写清：
-- **触发条件**
-- **系统行为**
-- **事件发布**
-- **调用方感知**
-- **恢复方式**
-
----
-
-## 3. 错误处理约定
-
-- **可重试错误**：{{POLICY}}
-- **不可重试错误**：{{POLICY}}
-- **静默忽略**：{{POLICY}}
+Each failure point must clearly document:
+- **Trigger condition**
+- **System behavior**
+- **Event publishing**
+- **Caller perception**
+- **Recovery method**
 
 ---
 
-> **提示**：当前 data-flow.md 是空模板。请按项目实际流程填写。格式参考 ECC 仓库的实际项目示例。
+## 3. Error Handling Conventions
+
+- **Retryable errors**: {{POLICY}}
+- **Non-retryable errors**: {{POLICY}}
+- **Silent ignore**: {{POLICY}}
+
+---
+
+> **Note**: This data-flow.md is currently an empty template. Fill it in according to your project's actual flows. For format reference, see real project examples in the ECC repository.

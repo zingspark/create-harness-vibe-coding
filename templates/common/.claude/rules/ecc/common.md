@@ -1,32 +1,35 @@
 ---
-description: "Universal coding principles — always applied"
+description: "Universal harness constraints"
 alwaysApply: true
 ---
 
-# Universal Coding Rules
+# Universal Rules
 
-## Architecture Boundaries (CLAUDE.md enforced)
-- `domain/` depends on stdlib only — no infrastructure imports ever
-- `application/` depends on `domain/` only
-- `infrastructure/` implements ports defined in `domain/`
-- `harness/` coordinates workflows, contains no domain business rules
+## Context
 
-## Code Style
-- Prefer small, deterministic, pure functions
-- Functions > 30 lines need a comment explaining why they can't be split
-- No hidden global state in strategy or service objects
-- Explicit over implicit: type hints on all function signatures
+- Start with `CLAUDE.md`, `MEMORY.md`, and `docs/README.md`.
+- Do not bulk-read `docs/`. Load by router trigger.
+- Keep `docs/harness/PLAN.md` current when work has multiple steps, files, or agents.
 
-## Git Workflow
-- Commit format: `type(scope): message` — types: feat/fix/test/docs/refactor/chore
-- Every feature PR must include: implementation + tests + doc update
-- Keep commits atomic; one logical change per commit
+## Verification
 
-## Testing
-- Write tests before or alongside implementation, not after
-- Test behavior, not implementation details
-- Tests must be deterministic and not depend on wall-clock time
+- Define acceptance criteria before implementation.
+- New behavior: failing test first, or a written manual check if automation is not feasible yet.
+- Bug fix: reproduction first.
+- Before release, add CI for the chosen stack and run the full verification path.
+
+## Subagents
+
+- Use `docs/harness/context-loading.md` before spawning.
+- Use `docs/harness/dispatch.md` before parallel or multi-agent work.
+- Use `docs/harness/extension.md` before adding stack-specific agents, skills, rules, or hooks.
+- Every subagent needs role, task, read boundary, write boundary, and return format.
+- Writing agents must run serially unless write sets are disjoint.
+- If the runtime cannot spawn subagents, emulate the same role pack in a separate bounded pass.
+- Main agent owns integration and final verification.
 
 ## Security
-- No API keys or secrets in source code — use environment variables
-- Validate all external data at system boundaries
+
+- No secrets in source code.
+- Validate external input at system boundaries.
+- High-risk actions need explicit user approval or documented permission policy.

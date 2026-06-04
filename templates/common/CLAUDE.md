@@ -2,22 +2,31 @@
 
 ## 📖 Doc Navigation (read before every task)
 
-`@docs/README.md` is the project fact source. Route by role:
+`@docs/README.md` is the project fact source and router. Keep context small: load the matching row, then only the docs it directly names.
+
+Every new session starts with:
+1. Read `@MEMORY.md`.
+2. Read `@docs/README.md`.
+3. If work spans more than one step, update `@docs/harness/PLAN.md`.
 
 | Your Role | Required Reading |
 |-----------|-----------------|
+| New to the project / unclear idea | `docs/harness/lifecycle.md` → `docs/research/PRD.md` |
+| Researching market / stack / examples | `docs/research/README.md` → `docs/research/research-results.md` |
 | Writing code / implementing | `docs/harness/agent-workflow.md` → `docs/features/_template.md` |
 | Designing architecture / new modules | `docs/harness/architecture.md` → `docs/domain/ports.md` |
-| Reviewing code | `docs/harness/state-machines.md` → tests |
+| Reviewing code | `docs/harness/agent-workflow.md` → tests |
 | Fixing bugs / debugging | `docs/harness/data-flow.md` → `docs/harness/state-machines.md` |
-| New to the project | `docs/research/PRD.md` → `docs/harness/architecture.md` |
+| Coordinating subagents | `docs/harness/context-loading.md` → `docs/harness/dispatch.md` |
 
 **Hard rules**:
-- Before touching cross-layer boundaries, read `docs/domain/ports.md`
-- Before adding failure paths, read `docs/harness/data-flow.md`
-- Before modifying stateful components, read `docs/harness/state-machines.md`
-- Unsure whether to open a feature doc? Read `docs/harness/agent-workflow.md` §1
-- **Every new session must read `@MEMORY.md`** for accumulated context
+- Before touching cross-layer boundaries, read `docs/domain/ports.md`.
+- Before adding failure paths, read `docs/harness/data-flow.md`.
+- Before modifying stateful components, read `docs/harness/state-machines.md`.
+- Unsure whether to open a feature doc? Read `docs/harness/agent-workflow.md` §1.
+- Before coordinating multiple agents, fill `docs/harness/PLAN.md#Parallel Dispatch` and follow `docs/harness/dispatch.md`.
+- When adding stack-specific agents, skills, rules, or hooks, follow `docs/harness/extension.md`.
+- **Every new session must read `@MEMORY.md`** for accumulated context.
 
 ---
 
@@ -89,25 +98,13 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ## 5. Memory & Self-Learning
 
-When a user expresses "remember / preference / habit / correction" intent, **persist to `MEMORY.md`** for reuse across sessions.
-**Important**: Every new session must read `@MEMORY.md`.
+Every new session must read `@MEMORY.md`.
 
-### 5.1 Trigger Words
+### 5.1 User Memory
 
-When the user's message contains these keywords or intent, write to `MEMORY.md`:
+Persist only durable user preferences, corrections, or workflow defaults. Trigger examples: "remember", "never", "next time", "always", "I prefer".
 
-| Trigger Phrase | Meaning | Write To |
-|---|---|---|
-| "remember…", "note…", "save…" | User wants to persist a fact/preference | User Mem |
-| "don't ever…", "never…", "stop doing…" | User corrects a behavior — avoid in future | User Mem |
-| "next time…", "always…", "from now on…" | User specifies a future default behavior | User Mem |
-| "I prefer…", "I like…", "my workflow…" | User expresses a work habit or preference | User Mem |
-
-If unclear whether a message triggers memory, ask the user before writing. Don't auto-record every conversation.
-
-### 5.2 MEMORY.md Write Format
-
-Append to `## User Mem` in `MEMORY.md`, newest first:
+Append newest first under `MEMORY.md#User Mem`:
 
 ```markdown
 ### YYYY-MM-DD — <short title>
@@ -116,17 +113,17 @@ Append to `## User Mem` in `MEMORY.md`, newest first:
 - **Why**: <user's reason, if provided>
 ```
 
-### 5.3 Self-Learning: Tool Usage Standards
+Do not record ordinary conversation. If persistence is ambiguous, ask first.
 
-When Claude Code discovers the following patterns (without involving user privacy), auto-append to `## Tool Usage Standards` in `MEMORY.md`:
+### 5.2 Tool Self-Learning
 
-| Pattern Discovered | Record |
-|---|---|
-| A tool/MCP/skill fails 3+ times when called frequently, or has a better alternative | Record: scenario → failure cause → recommended alternative |
-| A code error repeats in the same file/module (lint errors, type errors, import errors) | Record: error type → trigger condition → fix template |
-| A skill/MCP is called in a way that deviates from best practices, causing inefficiency | Record: correct usage → usage to avoid |
+Auto-record only reusable, non-private workflow lessons under `MEMORY.md#Tool Usage Standards` when:
 
-Format:
+- the same tool/MCP/skill failure repeats 3+ times, or a better alternative is found
+- the same local error pattern repeats, such as lint, type, import, or test setup failures
+- a skill/tool is used inefficiently and a clearer standard emerges
+
+Use this format:
 
 ```markdown
 ### <tool/skill name> — <brief issue>
@@ -136,4 +133,4 @@ Format:
 - **Date**: <first recorded date>
 ```
 
-If the same issue already exists, update it rather than creating a duplicate. If a new finding contradicts an old record, replace the old one and note the date.
+Update existing entries instead of duplicating them. Never record secrets or private user data.

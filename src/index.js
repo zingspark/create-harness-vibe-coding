@@ -11,8 +11,8 @@ const argDir = args[1];
 
 console.log('');
 console.log(pc.magenta('╔══════════════════════════════════════════╗'));
-console.log(pc.magenta('║   🎯 create-harness-vibe-coding          ║'));
-console.log(pc.magenta('║   Agentic Harness — Vibe Coding Ready    ║'));
+console.log(pc.magenta('║   create-harness-vibe-coding             ║'));
+console.log(pc.magenta('║   0-1 Product Harness Scaffold           ║'));
 console.log(pc.magenta('╚══════════════════════════════════════════╝'));
 console.log('');
 
@@ -26,7 +26,7 @@ if (argName) {
   console.log(pc.dim('────────────────────────────────────────────'));
   console.log(`  Project     ${pc.green(projectName)}`);
   console.log(`  Directory   ${pc.green(targetDir)}`);
-  console.log(`  Creates     ${pc.cyan('CLAUDE.md, docs/, .claude/, SETUP.md, tests/')}`);
+  console.log(`  Creates     ${pc.cyan('CLAUDE.md, docs/harness/PLAN.md, docs/, scripts/, .claude/, SETUP.md, tests/')}`);
   console.log(pc.dim('────────────────────────────────────────────'));
   console.log('');
 
@@ -52,7 +52,7 @@ if (argName) {
   console.log(pc.dim('────────────────────────────────────────────'));
   console.log(`  Project     ${pc.green(projectName)}`);
   console.log(`  Directory   ${pc.green(targetDir)}`);
-  console.log(`  Creates     ${pc.cyan('CLAUDE.md, docs/, .claude/, SETUP.md, tests/')}`);
+  console.log(`  Creates     ${pc.cyan('CLAUDE.md, docs/harness/PLAN.md, docs/, scripts/, .claude/, SETUP.md, tests/')}`);
   console.log(pc.dim('────────────────────────────────────────────'));
   console.log('');
 
@@ -79,24 +79,24 @@ if (argName) {
 
 function printResult(result, targetDir) {
   if (result.success) {
-    console.log(pc.green(`\n✅ Project created! ${result.created.length} files\n`));
+    console.log(pc.green(`\nProject created: ${result.created.length} files\n`));
 
     console.log(pc.bold('Next steps:'));
     console.log(`  ${pc.cyan(`cd ${targetDir}`)}`);
     console.log(`  ${pc.cyan('claude')}                          # Start Claude Code`);
-    console.log(`  Tell Claude: "${pc.yellow('Read SETUP.md and initialize this project')}"`);
+    console.log(`  Tell Claude: "${pc.yellow('Read SETUP.md. Bootstrap this project from idea to first vertical slice.')}"`);
     console.log('');
     console.log(pc.dim('  SETUP.md is temporary. Delete it after initialization.'));
     console.log('');
 
     if (result.errors.length > 0) {
-      console.log(pc.red(`\n⚠ ${result.errors.length} warning(s):`));
+      console.log(pc.red(`\n${result.errors.length} warning(s):`));
       for (const err of result.errors) {
         console.log(pc.red(`  - ${err}`));
       }
     }
   } else {
-    console.log(pc.red('\n❌ Generation failed:'));
+    console.log(pc.red('\nGeneration failed:'));
     for (const err of result.errors) {
       console.log(pc.red(`  - ${err}`));
     }

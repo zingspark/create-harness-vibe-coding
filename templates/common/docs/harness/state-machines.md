@@ -1,23 +1,23 @@
-# 状态机 — {{projectName}}
+# State Machines — {{projectName}}
 
-> **职责**：定义所有有状态组件的状态、转移、守卫条件、边界行为。长流程 harness 的大量 bug 来自非法状态转移。
+> **Responsibility**: Define the states, transitions, guard conditions, and boundary behaviors for every stateful component. The majority of bugs in long-running harness pipelines originate from illegal state transitions.
 >
-> 哲学来源：UML 2.5.1 第 15.3.14 节 + "转移表是整个文档最重要的产物"。
+> Philosophical source: UML 2.5.1 Section 15.3.14 + "The transition table is the single most important artifact in the document."
 
 ---
 
-## 状态机模板
+## State Machine Template
 
-每个有状态组件按此格式填写：
+Fill out each stateful component using this format:
 
-### 状态枚举
+### State Enumeration
 
-| 状态 | 描述 | 进入条件 | 退出条件 |
+| State | Description | Entry Condition | Exit Condition |
 | --- | --- | --- | --- |
 | `{{STATE_1}}` | {{DESCRIPTION}} | {{CONDITION}} | {{CONDITION}} |
 | `{{STATE_2}}` | {{DESCRIPTION}} | {{CONDITION}} | {{CONDITION}} |
 
-### 状态转移图
+### State Transition Diagram
 
 ```mermaid
 stateDiagram-v2
@@ -26,25 +26,25 @@ stateDiagram-v2
     {{STATE_2}} --> {{INITIAL_STATE}} : {{TRIGGER}}
 ```
 
-### 转移表（最重要）
+### Transition Table (Most Important)
 
-| 当前状态 ↓ / 事件 → | `{{EVENT_1}}` | `{{EVENT_2}}` | `{{EVENT_3}}` |
+| Current State ↓ / Event → | `{{EVENT_1}}` | `{{EVENT_2}}` | `{{EVENT_3}}` |
 | --- | --- | --- | --- |
 | **`{{STATE_1}}`** | {{TARGET}} | {{TARGET}} | {{TARGET}} |
 | **`{{STATE_2}}`** | {{TARGET}} | {{TARGET}} | {{TARGET}} |
 
-### 守卫条件
+### Guard Conditions
 
-| 转移 | 守卫条件 | 备注 |
+| Transition | Guard Condition | Notes |
 | --- | --- | --- |
 | `{{SOURCE}} -> {{TARGET}}` | {{GUARD}} | {{NOTE}} |
 
-### 非法转移
+### Illegal Transitions
 
-| 转移 | 为什么非法 |
+| Transition | Why Illegal |
 | --- | --- |
 | `{{SOURCE}} -> {{TARGET}}` | {{REASON}} |
 
 ---
 
-> **提示**：当前 state-machines.md 是空模板。请按项目实际的有状态组件填写。
+> **Note**: The current state-machines.md is an empty template. Please fill it in according to the project's actual stateful components.

@@ -1,73 +1,73 @@
-# 端口协议 — {{projectName}}
+# Port Contracts — {{projectName}}
 
-> **职责**：定义跨层接口契约。这是分层架构的"法律合同"。每个端口不仅写签名，还写前置条件、后置条件、错误语义。
+> **Responsibility**: Define cross-layer interface contracts. These are the "legal contracts" of a layered architecture. Each port documents not only its signature, but also preconditions, postconditions, and error semantics.
 >
-> **原则**：端口文档 != API 参考文档。它是一个合同（contract），指定调用方义务和实现方保证。
+> **Principle**: Port documentation != API reference documentation. It is a contract that specifies caller obligations and implementer guarantees.
 >
-> 哲学来源：Bertrand Meyer 的 Design by Contract (Eiffel) + Alistair Cockburn 的六边形架构端口文档。
+> Philosophical origins: Bertrand Meyer's Design by Contract (Eiffel) + Alistair Cockburn's hexagonal architecture port documentation.
 
 ---
 
-## 1. 端口分类
+## 1. Port Classification
 
-### 1.1 驱动端口（Inbound — 外部调用应用）
+### 1.1 Driving Ports (Inbound — external calls application)
 
-| 端口 | 定义位置 | 用途 |
+| Port | Definition Location | Purpose |
 | --- | --- | --- |
 | `{{INBOUND_PORT_1}}` | `{{LOCATION}}` | {{DESCRIPTION}} |
 
-### 1.2 被驱动端口（Outbound — 应用调用外部）
+### 1.2 Driven Ports (Outbound — application calls external)
 
-| 端口 | 定义位置 | 用途 |
+| Port | Definition Location | Purpose |
 | --- | --- | --- |
 | `{{OUTBOUND_PORT_1}}` | `{{LOCATION}}` | {{DESCRIPTION}} |
 
 ---
 
-## 2. 端口定义模板
+## 2. Port Definition Template
 
-每个端口按以下格式填写：
+Fill in each port using the format below:
 
-- **类别**：驱动 / 被驱动
-- **定义位置**：`{{FILE_PATH}}`
-- **协议类**：`{{CLASS_OR_INTERFACE}}`
+- **Category**: Driving / Driven
+- **Definition Location**: `{{FILE_PATH}}`
+- **Contract Class**: `{{CLASS_OR_INTERFACE}}`
 
-### 用途
+### Purpose
 
 {{WHAT_THIS_PORT_DOES}}
 
-### 方法
+### Methods
 
-**前置条件**（调用方必须保证）：
+**Preconditions** (caller must guarantee):
 - {{PRECONDITION_1}}
 - {{PRECONDITION_2}}
 
-**后置条件**（实现方保证）：
+**Postconditions** (implementer guarantees):
 - {{POSTCONDITION_1}}
 - {{POSTCONDITION_2}}
 
-**错误语义**：
+**Error Semantics**:
 
-| 异常类型 | 触发条件 | 调用方应 |
+| Exception Type | Trigger Condition | Caller Should |
 | --- | --- | --- |
 | `{{EXCEPTION_TYPE}}` | {{CONDITION}} | {{CALLER_ACTION}} |
 
-**幂等性**：{{YES_NO_AND_DETAILS}}
+**Idempotency**: {{YES_NO_AND_DETAILS}}
 
-### 已知实现
+### Known Implementations
 
-| 适配器 | 位置 | 用途 |
+| Adapter | Location | Purpose |
 | --- | --- | --- |
 | `{{ADAPTER_NAME}}` | `{{LOCATION}}` | {{PURPOSE}} |
 
 ---
 
-## 3. 跨端口不变量
+## 3. Cross-Port Invariants
 
 - {{INVARIANT_1}}
 - {{INVARIANT_2}}
-- 新增端口必须定义在 `domain/ports` 中，适配器放在 `infrastructure/`。
+- New ports must be defined in `domain/ports`; adapters go in `infrastructure/`.
 
 ---
 
-> **提示**：当前 ports.md 是模板。请根据你的项目领域替换 `{{...}}` 占位符。参考 `docs/harness/data-flow.md` 了解端口如何被编排。
+> **Note**: The current ports.md is a template. Replace `{{...}}` placeholders with your project's domain details. Refer to `docs/harness/data-flow.md` to understand how ports are orchestrated.

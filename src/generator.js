@@ -63,7 +63,7 @@ export function generate({ projectName, targetDir }) {
   if (fs.existsSync(resolvedDir)) {
     const existing = fs.readdirSync(resolvedDir).filter(f => f !== '.git');
     if (existing.length > 0) {
-      console.log(pc.yellow(`⚠ Directory "${targetDir}" already exists and is not empty. Files may be overwritten.`));
+      console.log(pc.yellow(`Directory "${targetDir}" already exists and is not empty. Files may be overwritten.`));
     }
   }
 
@@ -71,17 +71,15 @@ export function generate({ projectName, targetDir }) {
 
   try {
     // 1. Copy all template files
-    console.log(pc.cyan('📋 Copying templates...'));
+    console.log(pc.cyan('Copying templates...'));
     copyDir(TEMPLATES_DIR, resolvedDir, vars);
 
     // List all created files from templates
     created.push(...walkFiles(TEMPLATES_DIR).map(f => f.replace(/\\/g, '/')));
 
     // 2. Create empty directories
-    console.log(pc.cyan('📁 Creating placeholder directories...'));
+    console.log(pc.cyan('Creating placeholder directories...'));
     const emptyDirs = [
-      '.claude/agents',
-      '.claude/skills',
       '.claude/hooks',
       'tests',
     ];
