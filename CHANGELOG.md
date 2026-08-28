@@ -2,7 +2,7 @@
 
 ## [0.8.21] - 2026-08-28
 
-- Add global-first install flow: `npm i -g create-harness-vibe-coding` once per machine, then `create-harness-vibe-coding init .` (or the new `/wf-init` direct command) per project; the global runtime is the single version source of truth and each project keeps only bridge docs plus its own state.
+- Add global-first install flow: `npm i -g create-harness-vibe-coding` once per machine, then `create-harness-vibe-coding init .` (or the new `/wf-init` direct command) per project; the global runtime is the single version source of truth and each project keeps only bridge docs plus its own state. `init --scope project` keeps the classic full project-level install for self-contained repos.
 - Slim the npm package from 17.9 MB to 7.8 MB by shipping without frontend sourcemaps and dev-only UI sources; the wf-ui runtime bundle keeps full functionality.
 - Make the startup update hook silent for patch-only releases (x.y.Z): only major and minor updates prompt the user to run `/wf-update`; unparseable versions still fail open with a notice.
 

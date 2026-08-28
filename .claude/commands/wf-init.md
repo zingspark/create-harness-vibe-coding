@@ -1,10 +1,10 @@
 ---
-description: Initialize this project against the globally installed Harness runtime (thin bridge docs + project-local state; global runtime is the single version source of truth)
+description: Initialize this project with the Harness runtime — global bridge by default (`--scope global`), or classic full project-level install (`--scope project`)
 ---
 
 # /wf-init
 
-Initialize the current project against the global Harness runtime. This is a direct command.
+Initialize the current project with the Harness runtime. This is a direct command.
 Do not invoke a skill, do not start WF mode, and do not dispatch agents.
 
 Run from the project root:
@@ -26,16 +26,19 @@ Otherwise use the package fallback:
 npx create-harness-vibe-coding@0.8.21 init .
 ```
 
+Install scopes:
+
+- `--scope global` (default) — thin bridge: the project keeps only bridge docs (CLAUDE.md, AGENTS.md, Harness README/MEMORY/SETUP) plus its own state (`Harness/tasks/`, memory, `PROGRESS.md`, settings). Framework files, commands, skills, agents, and scripts load once from the machine-level global runtime, which is the single version source of truth.
+- `--scope project` — classic full project-level install: the whole framework is copied into the project so it stays self-contained; update per project with `/wf-update`.
+
 Useful flags:
 
 - `--dry-run` — print the plan without writing.
 - `--on-conflict <policy>` — `fail`, `skip` (default), `backup`, or `overwrite`. Keep `skip` so user-authored files are never clobbered.
-- `--global-dir <dir>` / `--host-global-dir <dir>` — override the global runtime and host-copy locations.
+- `--global-dir <dir>` / `--host-global-dir <dir>` — override the global runtime and host-copy locations (global scope only).
 
 Rules:
 
-- The project keeps only bridge docs (CLAUDE.md, AGENTS.md, Harness README/MEMORY/SETUP) and its own state (`Harness/tasks/`, `Harness/memory/`, `Harness/PROGRESS.md`, `Harness/settings.json`).
-- Framework files, commands, skills, agents, and scripts are NOT copied into the project; they load from the single global runtime, which is the only version source of truth.
 - Never overwrite user-authored files; the default conflict policy is `skip`.
 - If Harness already exists in the project, report the update path and stop — do not re-init.
-- Return the printed global runtime path and the next-step hints (`/wf-ui`, `/wf <task>`).
+- Return the printed install scope, the global runtime path (global scope), and the next-step hints (`/wf-ui`, `/wf <task>`).

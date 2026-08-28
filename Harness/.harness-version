@@ -1,6 +1,6 @@
 {
   "generator": "0.8.21",
-  "generated": "2026-08-28T03:50:57.961Z",
+  "generated": "2026-08-28T04:18:59.552Z",
   "options": [],
   "autoCheck": true,
   "source": "https://raw.githubusercontent.com/LiWeny16/create-harness-vibe-coding/main/templates/common/",
@@ -50,7 +50,7 @@
     ".claude/commands/wf-browser.md": "sha256-6d0414b451891d1f5f6826bbbb1e1207a4c1eb43eda6a378da43661a1708a7f1",
     ".claude/commands/wf-command-create.md": "sha256-b6027172e5d98c44f1ac22747a9ad52b27de15271018a60b10ac5b7c3d96f4a0",
     ".claude/commands/wf-help.md": "sha256-c191185b02be36992dcf9bcc37bfc36f94fb91bab9ffdf9f85a03dad1398e969",
-    ".claude/commands/wf-init.md": "sha256-2babc70a518914db0cc7d1d206e915ba66867615bda2263e58378d65ea0ec24b",
+    ".claude/commands/wf-init.md": "sha256-4d00af1fda373dc8360ca68cb45c1715438072519d2c8a23556c4389a1063197",
     ".claude/commands/wf-learn.md": "sha256-02606f2a91e03056676aa022a060cd4a05a4d3123f8cb6f5e27bc50d90c6448a",
     ".claude/commands/wf-max.md": "sha256-88cdfb4ef8a205483045302b56dec268bdf010debd9c4473b665f5720e4c5697",
     ".claude/commands/wf-readme.md": "sha256-3eee1a6b3f62c22ed46440ed38ecb02999c9a3128d7660e91e7f0a94c59fa463",
@@ -111,7 +111,7 @@
     ".opencode/commands/wf-browser.md": "sha256-6d0414b451891d1f5f6826bbbb1e1207a4c1eb43eda6a378da43661a1708a7f1",
     ".opencode/commands/wf-command-create.md": "sha256-29b597b7c2c3b8a7e131365e1704855bbd2774511ed30cf99e398f77123e2981",
     ".opencode/commands/wf-help.md": "sha256-9dce70c333c2deb51f827c30128383723475213097d817e9c36118a9212ddf04",
-    ".opencode/commands/wf-init.md": "sha256-2babc70a518914db0cc7d1d206e915ba66867615bda2263e58378d65ea0ec24b",
+    ".opencode/commands/wf-init.md": "sha256-4d00af1fda373dc8360ca68cb45c1715438072519d2c8a23556c4389a1063197",
     ".opencode/commands/wf-learn.md": "sha256-02606f2a91e03056676aa022a060cd4a05a4d3123f8cb6f5e27bc50d90c6448a",
     ".opencode/commands/wf-max.md": "sha256-21ddf8d4eff7ce91948a41eb68cbc9d184349ca3a422c72950fc83a5039eb663",
     ".opencode/commands/wf-readme.md": "sha256-3eee1a6b3f62c22ed46440ed38ecb02999c9a3128d7660e91e7f0a94c59fa463",
@@ -148,7 +148,7 @@
     "Harness/a2a/skills/workflow-skill-group-node.json": "sha256-98d43dd9b9183b1e976e02cecd3a2302a152ceb77fc540dad10be959c5d56725",
     "Harness/a2a/skills/workflow-timer-node.json": "sha256-a195c46ee5c0231bd2970ccf4e81b355f982aedc87b46fdb93dbe2c886e6fa95",
     "Harness/a2a/workflows.json": "sha256-5244fabb115dfcfa93234872bbfe8779696efac683fe38e79ede0e3d16b0d591",
-    "Harness/ownership.manifest.json": "sha256-c93b0c66cbab89f0f6fae9ce2cf74835b22db2b3d16ca50af5e6ed6e898563b9",
+    "Harness/ownership.manifest.json": "sha256-1073d7dcdef48efb07f82fa9ab79df4ca02eea6fd7629f2ae0ef4f5ff680df30",
     "Harness/project/architecture.md": "sha256-6d3b4d773d768854b610e85099245e0789543149acc1e5c4a3a8205d2af81eb2",
     "Harness/research/README.md": "sha256-b7a542c0d919cabc185b6e7a1e6ef265dc5160978d0c1dd804f2c6547d0202a4",
     "Harness/scripts/README.md": "sha256-b97601aca4c042f09aa387cdf8764a242a3e67d40888fd5eb27c1ff2c86926f6",
@@ -574,7 +574,7 @@
     "version": "0.8.21",
     "date": "2026-08-28",
     "highlights": [
-      "Add global-first install flow: `npm i -g create-harness-vibe-coding` once per machine, then `create-harness-vibe-coding init .` (or the new `/wf-init` direct command) per project; the global runtime is the single version source of truth and each project keeps only bridge docs plus its own state.",
+      "Add global-first install flow: `npm i -g create-harness-vibe-coding` once per machine, then `create-harness-vibe-coding init .` (or the new `/wf-init` direct command) per project; the global runtime is the single version source of truth and each project keeps only bridge docs plus its own state. `init --scope project` keeps the classic full project-level install for self-contained repos.",
       "Slim the npm package from 17.9 MB to 7.8 MB by shipping without frontend sourcemaps and dev-only UI sources; the wf-ui runtime bundle keeps full functionality.",
       "Make the startup update hook silent for patch-only releases (x.y.Z): only major and minor updates prompt the user to run `/wf-update`; unparseable versions still fail open with a notice."
     ]

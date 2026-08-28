@@ -747,13 +747,22 @@ function flushStdout() {
   });
 }
 
-// init: bind an existing project to the global Harness runtime (non-interactive).
-// Project bridge docs + local state stay in the project; framework files,
-// commands, skills, and scripts live once in the global runtime, which is the
-// single version source of truth. Safe to re-run: user-authored files are
-// preserved under the default `skip` conflict policy.
+// init: bind an existing project to a Harness runtime (non-interactive).
+// Default scope `global`: the project gets thin bridge docs plus its own
+// state, while framework files/commands/skills/scripts live once in the
+// machine-level global runtime — the single version source of truth.
+// Scope `project` keeps the classic full project-level install: the whole
+// framework is copied into the project so it stays self-contained.
+// Safe to re-run: user-authored files are preserved under the default `skip`
+// conflict policy.
 function runInit(args) {
-  const valueFlags = new Set(['--global-dir', '--host-global-dir', '--on-conflict']);
+  const valueFlags = new Set(['--global-dir', '--host-global-dir', '--on-conflict', '--scope']);
+  const scopeRaw = (extractFlag(args, '--scope') || 'global').trim().toLowerCase();
+  const installScope = scopeRaw === 'project' || scopeRaw === 'global' ? scopeRaw : null;
+  if (!installScope) {
+    console.error(pc.red(`[init] unknown --scope "${scopeRaw}". Use project or global.`));
+    process.exit(1);
+  }
   const positional = args.find((arg, idx) => !arg.startsWith('-') && !valueFlags.has(args[idx - 1]));
   const targetDir = positional || '.';
   const scan = scanTarget(targetDir);
@@ -777,9 +786,9 @@ function runInit(args) {
     withoutOptions: [],
     externalOptions: [],
     preset: undefined,
-    installScope: 'global',
-    globalDir: extractFlag(args, '--global-dir'),
-    hostGlobalDir: extractFlag(args, '--host-global-dir'),
+    installScope,
+    globalDir: installScope === 'global' ? extractFlag(args, '--global-dir') : undefined,
+    hostGlobalDir: installScope === 'global' ? extractFlag(args, '--host-global-dir') : undefined,
     json: hasFlag(args, '--json'),
   });
 
@@ -810,9 +819,9 @@ function runInit(args) {
   if (result.dryRun) {
     console.log(pc.yellow('\nDry run: no files or directories were written.'));
   } else {
-    console.log(pc.green('\nInit complete.\n'));
+    console.log(pc.green(`\nInit complete (${installScope} scope).\n`));
   }
-  console.log(pc.bold('Project bridge:'));
+  console.log(pc.bold('Project install:'));
   printInitSummary(result.summary);
   if (result.globalSummary) {
     console.log(pc.bold('\nGlobal runtime (single version source of truth):'));
@@ -827,10 +836,14 @@ function runInit(args) {
   printInitWarnings(result);
 
   console.log(pc.bold('\nNext steps:'));
-  console.log(`  ${pc.cyan('/wf-ui')}            # Open the control panel; the global runtime serves this project`);
+  console.log(`  ${pc.cyan('/wf-ui')}            # Open the control panel${installScope === 'global' ? '; the global runtime serves this project' : ''}`);
   console.log(`  ${pc.cyan('/wf <task>')}       # Start a workflow task in this project`);
-  console.log(pc.dim('\n  Project state (Harness/tasks, memory, PROGRESS.md) stays local to this project.'));
-  console.log(pc.dim('  Update the global runtime with /wf-update or `npm i -g create-harness-vibe-coding@latest`; every project picks it up.'));
+  if (installScope === 'global') {
+    console.log(pc.dim('\n  Project state (Harness/tasks, memory, PROGRESS.md) stays local to this project.'));
+    console.log(pc.dim('  Update the global runtime with /wf-update or `npm i -g create-harness-vibe-coding@latest`; every project picks it up.'));
+  } else {
+    console.log(pc.dim('\n  The full Harness framework lives in this project; update it per project with /wf-update.'));
+  }
   console.log('');
 }
 
