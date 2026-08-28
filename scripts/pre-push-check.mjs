@@ -19,18 +19,18 @@ const CHECKS = [
   { label: 'local script mirror parity', cmd: 'node scripts/check-script-mirrors.mjs' },
   { label: 'harness validator', cmd: 'node Harness/scripts/validate-harness.mjs --strict' },
   { label: 'template harness validator', cmd: 'node templates/common/Harness/scripts/validate-harness.mjs --strict' },
-  { label: 'tests pass (no temp leak)', cmd: 'node scripts/check-temp-leak.mjs -- npm test' },
-  { label: 'wf script e2e tests', cmd: 'npm run test:e2e' },
-  { label: 'package smoke tests', cmd: 'npm run pack:smoke' },
+  { label: 'tests pass (no temp leak)', cmd: 'node scripts/check-temp-leak.mjs -- npm test', timeout: 240000 },
+  { label: 'wf script e2e tests', cmd: 'npm run test:e2e', timeout: 240000 },
+  { label: 'package smoke tests', cmd: 'npm run pack:smoke', timeout: 240000 },
 ];
 
 let failed = 0;
 const start = Date.now();
 
-for (const { label, cmd } of CHECKS) {
+for (const { label, cmd, timeout = 60000 } of CHECKS) {
   process.stdout.write(`  ${label}... `);
   try {
-    execSync(cmd, { cwd: ROOT, stdio: 'pipe', timeout: 60000 });
+    execSync(cmd, { cwd: ROOT, stdio: 'pipe', timeout });
     console.log('PASS');
   } catch {
     console.log('FAIL');

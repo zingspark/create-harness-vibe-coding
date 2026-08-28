@@ -156,7 +156,7 @@ const MIME = {
   '.woff2': 'font/woff2',
 };
 
-const SERVER_VERSION = '0.8.20';
+const SERVER_VERSION = '0.8.21';
 const EVENTS_WS_HANDLE = Symbol.for('wf-ui.eventsWsHandle');
 const FILE_WATCHER_HANDLE = Symbol.for('wf-ui.fileNodeWatcher');
 const CHAT_WS_HANDLE = Symbol.for('wf-ui.chatWsHandle');
