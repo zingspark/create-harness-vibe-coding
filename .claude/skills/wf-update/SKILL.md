@@ -47,6 +47,10 @@ Scope resolution is deterministic:
 - Current project has no Harness install: update only the global runtime and host-global copies. Do not scaffold or modify the project unless the user explicitly asks to install Harness there.
 `Harness/scripts/wf-update-runner.mjs` implements this multi-scope routing. Older installs that do not have the runner fall back to `Harness/scripts/wf-update-check.mjs`.
 
+All update paths are bounded: pass `--timeout-ms <positive-ms>` or set
+`WF_UPDATE_TIMEOUT_MS`; timeout exits with code `3`, an active update lock with
+code `4`, and successful transaction state is removed from `Harness/.temp`.
+
 1. Run `node Harness/scripts/wf-update-runner.mjs --json` first when present; otherwise run `node Harness/scripts/wf-update-check.mjs --json` and use the `agent` block as the action plan. Current updaters try npm `create-harness-vibe-coding@latest` first, then canonical GitHub `LiWeny16/create-harness-vibe-coding`, then legacy mirror `zingspark/create-harness-vibe-coding`.
 2. Preserve all PRESERVE files. Never overwrite user task, memory, research, root README.md, package, progress, or architecture files. Harness/README.md is merge-tier, not PRESERVE.
 3. If `agent.safeApplyCommand` is present, run the runner apply path to apply SAFE, NEW, moved, and adopted metadata-only files across every discovered scope before spending AI time on conflicts. Default multi-scope command: `node Harness/scripts/wf-update-runner.mjs --apply-safe --json`. Single-scope fallback command: `node Harness/scripts/wf-update-check.mjs --apply-safe`.

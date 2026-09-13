@@ -105,6 +105,10 @@ test('parseTaskCapsule parses a valid task capsule directory with STATE.json', (
   assert.equal(result.status, 'active');
   assert.equal(result.phase, 'wave-1-synthesis');
   assert.equal(result.gate, 'E-GATE');
+  assert.equal(result.project, 'default');
+  assert.deepEqual(result.tags, []);
+  assert.equal(result.wfManaged, true);
+  assert.equal(result.resumeRequired, true);
   assert.equal(result.updatedAt, '2026-07-29T08:00:00.000Z');
   assert.equal(result.activeQuestion, null);
   assert.ok(Array.isArray(result.acceptance));
@@ -116,6 +120,40 @@ test('parseTaskCapsule parses a valid task capsule directory with STATE.json', (
   assert.equal(result.hasPlan, true);
   assert.equal(result.hasProgress, true);
   assert.deepEqual(result.runtimeHistory, ['claude', 'codex']);
+});
+
+test('AC-004 parser exposes canonical project/date/task lifecycle metadata without a second store', () => {
+  const dir = path.join(baseDir, 'task-project-metadata');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'STATE.json'), JSON.stringify({
+      schemaVersion: 1,
+      taskId: 'task-project-metadata',
+      status: 'blocked',
+      mode: 'wf-max',
+      project: 'release-platform',
+      group: 'legacy-release-platform',
+      tags: ['release', 'platform'],
+      createdAt: '2026-09-08T07:00:00.000Z',
+      startedAt: '2026-09-08T07:01:00.000Z',
+      updatedAt: '2026-09-08T07:02:00.000Z',
+      closedAt: null,
+      phase: 'implement',
+      links: { dependsOn: [], blocks: [], related: [] },
+    }));
+
+    const result = parseTaskCapsule(dir);
+    assert.equal(result.project, 'release-platform');
+    assert.equal(result.group, 'legacy-release-platform');
+    assert.deepEqual(result.tags, ['release', 'platform']);
+    assert.equal(result.createdAt, '2026-09-08T07:00:00.000Z');
+    assert.equal(result.startedAt, '2026-09-08T07:01:00.000Z');
+    assert.equal(result.closedAt, null);
+    assert.equal(result.wfManaged, true);
+    assert.equal(result.resumeRequired, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('parseTaskCapsule returns null for directory without STATE.json', () => {

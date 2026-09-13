@@ -177,3 +177,27 @@ When a lesson comes from acceptance work, include:
 - final fix or operating rule
 
 This keeps future agents from relearning the same acceptance gap.
+
+## Executable memory/reuse surface (0.9.2)
+
+The project-local CLI is `node Harness/scripts/memory-context.mjs`:
+
+```text
+query --project ROOT --text TEXT --scope project|global|task --top-k N --budget-bytes N --json
+validate --project ROOT --input CANDIDATE.json --json
+apply --project ROOT --input CANDIDATE.json [--apply] --json
+set-status --project ROOT --id ID --status inactive|superseded|active [--superseded-by ID] [--apply] --json
+feedback --project ROOT --task TASK --entry ID --outcome useful|unused|incorrect --reason TEXT [--apply] --json
+```
+
+Memory markdown remains the source of truth. A durable entry is a
+`harness-memory` JSON HTML comment immediately adjacent to its `- When ...`
+bullet. Legacy bullets remain queryable, but have unknown verification status.
+Query reports explainable hits, skipped reasons, and UTF-8 byte usage; inactive,
+superseded, out-of-scope, and overdue `recheckAfter` entries are not returned.
+`conflictsWith` and `recheckAfter` are surfaced explicitly rather than treated
+as semantic authorization. Method candidates require evidence, a counterexample,
+and passed verification. Apply and status changes require `--apply`, are
+idempotent by `id`, and require an explicit `supersedes` relation for conflicting
+content. Feedback is append-only task-local evidence and never updates durable
+memory.

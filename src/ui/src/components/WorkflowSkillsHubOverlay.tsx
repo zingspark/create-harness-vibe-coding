@@ -20,7 +20,7 @@ import { useReducedMotion } from '../hooks/useReducedMotion';
  * --border, --radius, --accent, --surface, --danger, --success, --warn).
  */
 
-export type WorkflowSkillsOverlayTab = 'installed' | 'groups';
+export type WorkflowSkillsOverlayTab = 'installed' | 'market' | 'groups';
 
 /**
  * Transfer type + payload contract for dragging a composed skill set onto the
@@ -57,7 +57,6 @@ export interface WorkflowSkillsOverlayGroup {
 export interface WorkflowSkillsOverlayHub {
   tabs?: WorkflowSkillsOverlayTab[];
   activeTab?: WorkflowSkillsOverlayTab;
-  installTargets?: string[];
 }
 
 export interface WorkflowSkillsOverlayAgent {
@@ -65,21 +64,25 @@ export interface WorkflowSkillsOverlayAgent {
   label: string;
 }
 
-export interface WorkflowSkillsOverlayPack {
-  packSlug: string;
-  name?: string;
-  description?: string;
-  category?: string;
-  skillCount?: number;
-  installed?: boolean;
-  installable?: boolean;
-}
-
 export interface WorkflowSkillsOverlayGroupRow {
   id: string;
   label: string;
   category?: string;
   skillCount?: number;
+}
+
+export interface WorkflowSkillsOverlayPack {
+  id?: string;
+  provider?: string;
+  packSlug: string;
+  slug?: string;
+  name?: string;
+  description?: string;
+  category?: string;
+  skillCount?: number;
+  installCount?: number;
+  installed?: boolean;
+  installable?: boolean;
 }
 
 /**
@@ -96,6 +99,8 @@ export interface WorkflowSkillsOverlayFamily {
 export interface WorkflowSkillsHubOverlayProps {
   open: boolean;
   mode: 'hub' | 'group';
+  /** Optional Agent target carried from the node context menu. */
+  targetAgentId?: string;
   group?: WorkflowSkillsOverlayGroup;
   hub?: WorkflowSkillsOverlayHub;
   agents?: WorkflowSkillsOverlayAgent[];
@@ -104,18 +109,32 @@ export interface WorkflowSkillsHubOverlayProps {
    * (In group mode, group.skills is used instead.)
    */
   skills?: WorkflowSkillsOverlaySkill[];
-  /** Pack rows (legacy prop; the Market tab was removed from this overlay). */
+  /** Optional hub search state, shared with the route capability data. */
+  search?: string;
+  onSearchChange?: (value: string) => void;
+  /** Pack rows shown on the Market tab in hub mode. */
   packs?: WorkflowSkillsOverlayPack[];
+  /** Provider target ids accepted by the market install endpoint. */
+  installTargets?: string[];
+  marketLoading?: boolean;
+  marketError?: string;
+  marketBusyPackId?: string;
+  /** Skill ids already attached to the targeted Agent in hub mode. */
+  attachedSkillIds?: string[];
   /** Group rows shown on the Groups tab. */
   groups?: WorkflowSkillsOverlayGroupRow[];
   /** Name-family groups (`kind: 'name-family'`) for collapsible hub sections. */
   families?: WorkflowSkillsOverlayFamily[];
   onClose: () => void;
   onSetSkillEnabled?: (skillId: string, enabled: boolean) => void;
+  /** Attaches an Installed skill to the targeted Agent in hub mode. */
+  onAttachSkillToAgent?: (skillId: string) => void;
   onAttachToAgent?: (agentNodeId: string) => void;
   onUngroupSkill?: (skillId: string) => void;
   /** Optional: user picked a group row (hub mode, Groups tab). */
   onPickGroup?: (groupId: string) => void;
+  /** Installs a selected market pack into the selected target scope. */
+  onInstallPack?: (pack: WorkflowSkillsOverlayPack, targetScope: string) => void;
   /**
    * Optional: called when a composition drag starts (the draft chip or a
    * single skill row), so the integrator can hide the overlay and let the
@@ -133,6 +152,7 @@ export interface WorkflowSkillsHubOverlayProps {
 
 const TAB_LABELS: Record<WorkflowSkillsOverlayTab, (t: (k: string) => string) => string> = {
   installed: t => t('Installed'),
+  market: t => t('Market'),
   groups: t => t('Groups'),
 };
 
@@ -140,31 +160,41 @@ export default function WorkflowSkillsHubOverlay(props: WorkflowSkillsHubOverlay
   const {
     open,
     mode,
+    targetAgentId = '',
     group,
     hub,
     agents,
     skills,
+    search = '',
+    onSearchChange,
     packs,
+    installTargets = [],
+    marketLoading = false,
+    marketError = '',
+    marketBusyPackId = '',
+    attachedSkillIds = [],
     groups,
     families,
     onClose,
     onSetSkillEnabled,
+    onAttachSkillToAgent,
     onAttachToAgent,
     onUngroupSkill,
     onPickGroup,
+    onInstallPack,
     onDraftDragStart,
     hidden = false,
   } = props;
   const t = useT();
 
   const availableTabs = (hub?.tabs ?? (['installed', 'groups'] as WorkflowSkillsOverlayTab[]))
-    .filter(tab => tab === 'installed' || tab === 'groups');
+    .filter(tab => tab === 'installed' || tab === 'market' || tab === 'groups');
   const initialTab = hub?.activeTab && availableTabs.includes(hub.activeTab)
     ? hub.activeTab
     : availableTabs[0] ?? 'installed';
 
   const [activeTab, setActiveTab] = useState<WorkflowSkillsOverlayTab>(initialTab);
-  const [installTarget, setInstallTarget] = useState<string>('');
+  const [installTarget, setInstallTarget] = useState('');
   const [pickedAgentNodeId, setPickedAgentNodeId] = useState<string>('');
   // Composition draft (hub mode only): skill ids staged by the Installed-tab
   // checkboxes and Add buttons before being dragged onto the node map.
@@ -175,8 +205,16 @@ export default function WorkflowSkillsHubOverlay(props: WorkflowSkillsHubOverlay
   const [expandedFamilyIds, setExpandedFamilyIds] = useState<Set<string>>(new Set());
   const reducedMotion = useReducedMotion();
 
-  const installTargets = hub?.installTargets ?? [];
   const agentList = agents ?? [];
+
+  useEffect(() => {
+    if (installTargets.length === 0) {
+      if (installTarget) setInstallTarget('');
+      return;
+    }
+    if (!installTargets.includes(installTarget)) setInstallTarget(installTargets[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [installTargets.join('|'), installTarget]);
 
   // Sync local active tab when the integrator-supplied activeTab changes.
   // Guarded by value equality to avoid update loops.
@@ -186,15 +224,6 @@ export default function WorkflowSkillsHubOverlay(props: WorkflowSkillsHubOverlay
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hub?.activeTab, availableTabs.join('|')]);
-
-  // Keep install target valid as the target list changes.
-  useEffect(() => {
-    if (installTargets.length === 0) return;
-    if (!installTarget || !installTargets.includes(installTarget)) {
-      setInstallTarget(installTargets[0]);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [installTargets.join('|'), installTarget]);
 
   // Keep picked agent valid as the agent list changes.
   useEffect(() => {
@@ -331,6 +360,7 @@ export default function WorkflowSkillsHubOverlay(props: WorkflowSkillsHubOverlay
       aria-label={title}
       data-testid="workflow-skills-overlay"
       data-mode={mode}
+      data-target-agent-id={targetAgentId}
       data-active-tab={mode === 'hub' ? activeTab : ''}
       data-group-id={group?.groupId || ''}
       data-node-id={group?.nodeId || ''}
@@ -379,6 +409,20 @@ export default function WorkflowSkillsHubOverlay(props: WorkflowSkillsHubOverlay
           </button>
         </header>
 
+        {mode === 'hub' && onSearchChange && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '12px 18px 0', padding: '7px 10px', border: '1px solid var(--border)', borderRadius: 'var(--radius)', background: 'var(--surface)' }}>
+            <span style={{ color: 'var(--muted)', fontSize: 11 }}>{t('Search')}</span>
+            <input
+              data-testid="workflow-skills-overlay-search"
+              aria-label={t('Search skills')}
+              value={search}
+              onChange={event => onSearchChange(event.target.value)}
+              placeholder={t('Search skills')}
+              style={{ minWidth: 0, flex: 1, border: 0, outline: 0, background: 'transparent', color: 'var(--fg)', fontSize: 12 }}
+            />
+          </label>
+        )}
+
         {/* Tabs row (hub mode only) */}
         {mode === 'hub' && availableTabs.length > 1 && (
           <div role="tablist" aria-label={t('Skills Hub sections')} style={tabsStyle}>
@@ -426,6 +470,7 @@ export default function WorkflowSkillsHubOverlay(props: WorkflowSkillsHubOverlay
               ) : (() => {
                 const renderSkillRow = (skill: WorkflowSkillsOverlaySkill) => {
                   const enabled = skill.enabled !== false;
+                  const attached = attachedSkillIds.includes(skill.id);
                   return (
                     <li
                       key={skill.id}
@@ -453,6 +498,19 @@ export default function WorkflowSkillsHubOverlay(props: WorkflowSkillsHubOverlay
                         </div>
                       </label>
                       <div style={skillActionsStyle}>
+                        {mode === 'hub' && onAttachSkillToAgent && (
+                          <button
+                            type="button"
+                            data-testid="workflow-skills-overlay-attach"
+                            data-skill-id={skill.id}
+                            onClick={() => onAttachSkillToAgent(skill.id)}
+                            disabled={attached}
+                            title={attached ? t('Attached to selected Agent') : t('Attach skill to selected Agent')}
+                            style={attached ? ghostBtnStyle : primaryBtnStyle}
+                          >
+                            {attached ? t('Attached') : t('Attach')}
+                          </button>
+                        )}
                         {mode === 'group' && onUngroupSkill && (
                           <button
                             type="button"
@@ -585,32 +643,66 @@ export default function WorkflowSkillsHubOverlay(props: WorkflowSkillsHubOverlay
                 </dl>
               </section>
 
-              {/* Install target (always visible so user can set default scope) */}
-              {installTargets.length > 0 && (
-                <section style={cardStyle} aria-label={t('Install target')}>
-                  <div style={cardHeaderStyle}><strong>{t('Install target')}</strong></div>
-                  <label style={pickerLabelStyle}>
-                    <span>{t('Target')}</span>
-                    <select
-                      data-testid="workflow-skills-overlay-install-target"
-                      value={installTarget}
-                      onChange={e => setInstallTarget(e.target.value)}
-                      style={selectStyle}
-                    >
-                      {installTargets.map(target => (
-                        <option key={target} value={target}>{target}</option>
-                      ))}
-                    </select>
-                  </label>
-                </section>
-              )}
-
             </aside>
           </div>
 
           {/* Groups tab body — pick a group row. */}
+          {mode === 'hub' && activeTab === 'market' && (
+            <section style={groupSectionStyle} aria-label={t('Skills Market')} data-testid="workflow-skills-overlay-market">
+              <div style={cardHeaderStyle}>
+                <strong>{t('Market')}</strong>
+                <span style={countPillStyle}>{(packs ?? []).length}</span>
+              </div>
+              {marketLoading && <div style={emptyStyle}>{t('Loading...')}</div>}
+              {marketError && <div style={errorStyle}>{marketError}</div>}
+              {installTargets.length > 0 && (
+                <label style={pickerLabelStyle}>
+                  <span>{t('Install target')}</span>
+                  <select
+                    data-testid="workflow-skills-overlay-install-target"
+                    value={installTarget}
+                    onChange={event => setInstallTarget(event.target.value)}
+                    style={selectStyle}
+                  >
+                    {installTargets.map(target => <option key={target} value={target}>{target}</option>)}
+                  </select>
+                </label>
+              )}
+              {(packs ?? []).length === 0 ? (
+                <div style={emptyStyle}>{t('No packs found')}</div>
+              ) : (
+                <ul style={listStyle}>
+                  {(packs ?? []).map(pack => (
+                    <li key={pack.id || pack.packSlug} data-testid="workflow-skills-pack-row" data-provider={pack.provider} data-pack-slug={pack.packSlug} style={packRowStyle}>
+                      <div style={skillMainStyle}>
+                        <div>
+                          <strong style={skillTitleStyle}>{pack.name || pack.packSlug}</strong>
+                          <span style={skillSubStyle}>
+                            {[pack.category, pack.skillCount != null ? `${pack.skillCount} ${t('skills')}` : ''].filter(Boolean).join(' · ')}
+                          </span>
+                          {pack.description && <span style={skillSubStyle}>{pack.description}</span>}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        data-testid="workflow-skills-install-pack"
+                        data-install-state={marketBusyPackId === (pack.id || pack.packSlug) ? 'installing' : pack.installed ? 'installed' : 'ready'}
+                        disabled={!pack.installable || !onInstallPack || !installTarget || marketBusyPackId === (pack.id || pack.packSlug)}
+                        onClick={() => onInstallPack?.(pack, installTarget)}
+                        style={pack.installed ? ghostBtnStyle : primaryBtnStyle}
+                      >
+                        {marketBusyPackId === (pack.id || pack.packSlug) ? t('Installing') : pack.installed ? t('Installed') : t('Install')}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
+
+          {/* Groups tab body — pick a group row. */}
           {mode === 'hub' && activeTab === 'groups' && (
-            <section style={marketSectionStyle} aria-label={t('Skill groups')}>
+            <section style={groupSectionStyle} aria-label={t('Skill groups')}>
               <div style={cardHeaderStyle}><strong>{t('Groups')}</strong></div>
               {(groups ?? []).length === 0 ? (
                 <div style={emptyStyle}>{t('No groups found')}</div>
@@ -1018,7 +1110,7 @@ const defValStyle: CSSProperties = {
   maxWidth: '60%',
 };
 
-const marketSectionStyle: CSSProperties = {
+const groupSectionStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   gap: 8,
@@ -1075,6 +1167,15 @@ const emptyStyle: CSSProperties = {
   color: 'var(--muted)',
   padding: '12px 8px',
   textAlign: 'center',
+};
+
+const errorStyle: CSSProperties = {
+  fontSize: 11,
+  lineHeight: 1.4,
+  color: 'var(--danger)',
+  padding: '6px 8px',
+  border: '1px solid var(--danger)',
+  borderRadius: 'var(--radius)',
 };
 
 const ghostBtnStyle: CSSProperties = {

@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "benchmarkId": "harness-intelligence-092",
+  "protocol": "Harness 0.9.2 Post-release Benchmark",
+  "packageExcluded": true,
+  "sealedHoldoutExcluded": true,
+  "files": [
+    "b1/sentinel.txt",
+    "b2/data.json",
+    "b2/stage1-user-prompt.md",
+    "b2/stage2-user-prompt.md",
+    "b2/baseline-handoff.md",
+    "b2/handoff.md",
+    "b3/user-prompt.md",
+    "b4/user-prompt.md",
+    "b5/user-prompt.md",
+    "b6/user-prompt.md",
+    "evidence-template.md",
+    "report.schema.json"
+  ],
+  "scenarios": {
+    "B1": { "name": "Exact install and sentinel preservation" },
+    "B2": { "name": "Billing CLI context recovery", "publicOracle": true },
+    "B3": { "name": "Real cross-runtime dispatch and side-effect safety", "identityJoin": ["dispatchId", "sessionId", "requestId", "replyTo", "attempt"], "taskIdWhenPresent": true, "uniqueTerminalPerAttempt": true, "explicitRetry": true, "maxRetryPerDispatch": 1, "retryCreatesNewSession": true, "independentCancellationDispatch": true, "replayNoAdditionalSideEffect": true },
+    "B4": { "name": "Scoped learning, counterexample, supersede, and restore", "required": true, "reviewRequired": true, "effectiveProjection": ["id", "scope", "status", "version", "content"], "appendOnlyAudit": true },
+    "B5": { "name": "Reuse decision boundary" },
+    "B6": { "name": "CLI-only backend then UI observation", "decodableImageRequired": true, "supportedImageFormats": ["png"], "unsupportedImageFormats": ["jpeg", "webp"], "browserManualReviewRequired": true }
+  }
+}

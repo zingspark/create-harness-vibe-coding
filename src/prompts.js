@@ -40,13 +40,13 @@ export async function askTargetDir(projectName) {
   return dir.trim();
 }
 
-export async function askInstallScope() {
+export async function askInstallScope(defaultScope = 'global') {
   const scope = await p.select({
     message: 'Harness install scope?',
-    initialValue: 'project',
+    initialValue: defaultScope,
     options: [
-      { value: 'project', label: 'Project-local', hint: 'full Harness scaffold in this project' },
-      { value: 'global', label: 'Global + project state', hint: 'shared runtime plus project-local tasks/memory' },
+      { value: 'global', label: 'Global + project state', hint: 'recommended for new projects; shared runtime plus local tasks/memory' },
+      { value: 'project', label: 'Project-local', hint: 'self-contained scaffold; compatibility/offline option' },
     ],
   });
 

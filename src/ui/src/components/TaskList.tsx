@@ -15,11 +15,19 @@ type Task = {
   status: string;
   phase: string | null;
   gate: string | null;
+  project?: string | null;
   updatedAt: string | null;
+  createdAt?: string | null;
+  startedAt?: string | null;
+  closedAt?: string | null;
+  tags?: string[];
   activeQuestion: string | null;
   nextAction: string | null;
   tier: string | null;
   mode: string | null;
+  wfManaged?: boolean;
+  resumeRequired?: boolean;
+  isActive?: boolean;
   group?: string | null;
   acceptance: ACItem[];
   dependsOn: string[];
@@ -75,7 +83,7 @@ const COMPLETED_KINDS = new Set([
 ]);
 
 function taskGroup(task: Task) {
-  return (task.group || '').trim() || 'default';
+  return (task.project || task.group || '').trim() || 'default';
 }
 
 function sanitizeGroupName(name: string) {
@@ -208,6 +216,8 @@ export default function TaskList({ onSelectSession }: Props) {
     const q = search.toLowerCase();
     return list.filter(task =>
       task.taskId.toLowerCase().includes(q) ||
+      (task.project || '').toLowerCase().includes(q) ||
+      (task.tags || []).some(tag => tag.toLowerCase().includes(q)) ||
       task.status.toLowerCase().includes(q) ||
       (task.phase || '').toLowerCase().includes(q) ||
       (task.nextAction || '').toLowerCase().includes(q)
@@ -450,9 +460,12 @@ export default function TaskList({ onSelectSession }: Props) {
                                 {task.archivedYear && <span style={{ fontSize: 9, color: 'var(--muted)', marginRight: 4 }}>[{task.archivedYear}]</span>}
                                 <TaskRuntimeMarks runtimes={taskRuntimes(task)} size={13} />
                                 {task.taskId}
+                                {task.isActive && <span title={t('Active focus')} style={{ color: '#2563eb', marginLeft: 5 }}>●</span>}
                               </div>
                               <div style={{ fontSize: 9, color: 'var(--muted)', marginTop: 1 }}>
                                 <span style={{ background: color.bg, color: color.fg, padding: '0 5px', borderRadius: 99, fontSize: 9, marginRight: 4 }}>{task.status}</span>
+                                {task.wfManaged && <span title={t('Harness-managed WF lifecycle')} style={{ color: '#7c3aed', marginRight: 4 }}>WF</span>}
+                                {task.resumeRequired && <span title={t('Automatically resumes on the next session')} style={{ color: '#2563eb', marginRight: 4 }}>↻</span>}
                                 {task.phase && <span>{task.phase}</span>}
                                 {task.updatedAt && <span> / {new Date(task.updatedAt).toLocaleDateString()}</span>}
                               </div>
@@ -494,7 +507,9 @@ export default function TaskList({ onSelectSession }: Props) {
                 <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 2 }}>
                   {selected.archivedYear && <span>[{selected.archivedPath || selected.archivedYear}] </span>}
                   <TaskRuntimeMarks runtimes={taskRuntimes(selected)} size={14} />
-                  {[selected.status, selected.phase, selected.gate, selected.tier, selected.mode].filter(Boolean).join(' / ')}
+                  {[selected.project || 'default', selected.status, selected.phase, selected.gate, selected.tier, selected.mode].filter(Boolean).join(' / ')}
+                  {selected.wfManaged && <span style={{ color: '#7c3aed', marginLeft: 5 }}>WF</span>}
+                  {selected.resumeRequired && <span title={t('Automatically resumes on the next session')} style={{ color: '#2563eb', marginLeft: 5 }}>↻</span>}
                   {selected.defaultRuntime ? ` / default: ${selected.defaultRuntime}` : ''}
                 </div>
               </div>
@@ -515,6 +530,13 @@ export default function TaskList({ onSelectSession }: Props) {
                   <X size={12} />
                 </button>
               </div>
+            </div>
+
+            <div data-testid="task-project-metadata" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 10, fontSize: 10, color: 'var(--muted)' }}>
+              <span>{t('Project')}: {selected.project || selected.group || 'default'}</span>
+              {selected.tags && selected.tags.length > 0 && <span>· {t('Tags')}: {selected.tags.join(', ')}</span>}
+              {selected.createdAt && <span>· {t('Created')}: {new Date(selected.createdAt).toLocaleDateString()}</span>}
+              {selected.startedAt && <span>· {t('Started')}: {new Date(selected.startedAt).toLocaleDateString()}</span>}
             </div>
 
             <div style={{ marginBottom: 10 }}>

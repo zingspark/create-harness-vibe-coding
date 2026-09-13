@@ -1,6 +1,3 @@
----
-description: List Harness task capsules with state, phase, status, and dependency info
----
 # /wf-task-list
 
 List Harness task capsules with state, phase, status, and dependency info. Do not invoke a skill or start WF mode.
@@ -11,15 +8,18 @@ DIRECT command. Wraps `node Harness/scripts/task-state.mjs list --json`. Never l
 
 ## Usage
 
-/wf-task-list [--json]
+/wf-task-list [--project <project>] [--group <project>] [--status <status>] [--by-group] [--json]
 
 - By default, returns a human-readable listing of all task capsules.
 - With --json, returns structured JSON output.
-- Shows active, open, blocked, verified tasks with dependency info.
+- Shows active, open, blocked, and closed tasks with dependency info.
+- `--project` is canonical; `--group` remains a compatible alias.
+- The generated machine/human task route is rebuilt by `node Harness/scripts/task-state.mjs index`; lifecycle writes refresh it automatically.
+- Search with `node Harness/scripts/task-state.mjs query <keyword> [--project <project>] [--status <status>] --json`.
 
 ## Execution
 
-Run: `node Harness/scripts/task-state.mjs list --json`
+Run: `node Harness/scripts/task-state.mjs list [--project <project>] [--group <project>] [--status <status>] [--by-group] --json`
 
 ## Return
 

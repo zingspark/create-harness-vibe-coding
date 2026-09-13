@@ -33,9 +33,9 @@ export const RUNTIME_DEFINITIONS = [
     resumeArgs: (sessionId) => sessionId ? ['--resume', sessionId] : ['--continue'],
     capabilities: [...COMMON_CAPABILITIES, 'skills', 'built-in-subagents'],
     configFiles: [
-      jsonConfig('user', '~/.claude/settings.json', homePath('.claude', 'settings.json'), { model: 'model' }),
-      jsonConfig('project', '.claude/settings.json', projectPath('.claude', 'settings.json'), { model: 'model' }),
-      jsonConfig('local', '.claude/settings.local.json', projectPath('.claude', 'settings.local.json'), { model: 'model' }),
+      jsonConfig('user', '~/.claude/settings.json', homePath('.claude', 'settings.json'), { model: 'model', availableModels: 'availableModels' }),
+      jsonConfig('project', '.claude/settings.json', projectPath('.claude', 'settings.json'), { model: 'model', availableModels: 'availableModels' }),
+      jsonConfig('local', '.claude/settings.local.json', projectPath('.claude', 'settings.local.json'), { model: 'model', availableModels: 'availableModels' }),
       jsonConfig('user-private', '~/.claude.json', homePath('.claude.json'), {}),
     ],
   },
@@ -49,9 +49,9 @@ export const RUNTIME_DEFINITIONS = [
     resumeArgs: (sessionId) => sessionId ? ['--resume', sessionId] : ['--continue'],
     capabilities: [...COMMON_CAPABILITIES, 'skills', 'built-in-subagents'],
     configFiles: [
-      jsonConfig('user', '~/.claude/settings.json', homePath('.claude', 'settings.json'), { model: 'model' }),
-      jsonConfig('project', '.claude/settings.json', projectPath('.claude', 'settings.json'), { model: 'model' }),
-      jsonConfig('local', '.claude/settings.local.json', projectPath('.claude', 'settings.local.json'), { model: 'model' }),
+      jsonConfig('user', '~/.claude/settings.json', homePath('.claude', 'settings.json'), { model: 'model', availableModels: 'availableModels' }),
+      jsonConfig('project', '.claude/settings.json', projectPath('.claude', 'settings.json'), { model: 'model', availableModels: 'availableModels' }),
+      jsonConfig('local', '.claude/settings.local.json', projectPath('.claude', 'settings.local.json'), { model: 'model', availableModels: 'availableModels' }),
       jsonConfig('user-private', '~/.claude.json', homePath('.claude.json'), {}),
     ],
   },
@@ -267,8 +267,25 @@ export function resolveRuntimeLaunchArgs(runtimeId, opts = {}) {
   const definition = getRuntimeDefinition(runtimeId);
   const args = [];
   const model = String(opts.model || '').trim();
+  const effort = String(opts.effort || '').trim();
+  // OpenCode's CLI calls the provider-specific reasoning selector a variant.
+  // This value must come from the trusted model catalog; do not derive it
+  // from the requested effort here because variant names are provider/model
+  // specific.
+  const effortVariant = String(opts.effortVariant || '').trim();
   const initialPrompt = String(opts.initialPrompt || '').trim();
   if (definition?.modelArg && model) args.push(definition.modelArg, model);
+  if (effort) {
+    if (runtimeId === 'codex') {
+      // Codex exposes reasoning effort through its documented config override
+      // rather than a standalone --effort flag.
+      args.push('-c', `model_reasoning_effort=${effort}`);
+    } else if (runtimeId === 'claude' || runtimeId === 'cc') {
+      args.push('--effort', effort);
+    } else if (runtimeId === 'opencode' && effortVariant) {
+      args.push('--variant', effortVariant);
+    }
+  }
   const launchPolicy = opts.launchPolicy || {};
   const bypassAll = launchPolicy.sandboxMode === 'danger-full-access'
     && launchPolicy.approvalPolicy === 'never';

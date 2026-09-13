@@ -23,9 +23,18 @@ export const DEFAULT_SETTINGS = {
   },
 };
 
+// Optional, Harness-owned declarations consumed by the runtime capability
+// preflight. This is intentionally not a vendor setting: Claude/OpenCode
+// configuration files remain provider-owned and are never amended by the
+// server. The field is optional so existing settings consumers keep their
+// exact default object shape.
+const OPTIONAL_PROJECT_SETTINGS_KEYS = new Set(['runtimeCapabilities']);
+
 /**
  * Deep-merge two plain objects. Only known keys from the defaults
  * structure are accepted; unknown keys in the override are silently ignored.
+ * The optional Harness-owned `runtimeCapabilities` declaration is preserved
+ * as a separately validated project field.
  *
  * @param {object} defaults - Default settings object
  * @param {object} override - Project override settings object
@@ -36,6 +45,12 @@ function deepMerge(defaults, override) {
 
   for (const key of Object.keys(override)) {
     if (!Object.hasOwn(defaults, key)) {
+      if (defaults === DEFAULT_SETTINGS && OPTIONAL_PROJECT_SETTINGS_KEYS.has(key)) {
+        // The capability declaration is validated by model-capability.mjs;
+        // preserve it here without widening every settings object or
+        // accepting arbitrary unknown settings.
+        result[key] = override[key];
+      }
       // Silently ignore unknown keys
       continue;
     }

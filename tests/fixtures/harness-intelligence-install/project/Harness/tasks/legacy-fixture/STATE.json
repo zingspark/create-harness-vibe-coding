@@ -1,0 +1,7 @@
+{
+  "taskId": "legacy-fixture",
+  "status": "active",
+  "phase": "plan",
+  "goal": "Read an old task without a context object",
+  "nextAction": "Resume the legacy task"
+}

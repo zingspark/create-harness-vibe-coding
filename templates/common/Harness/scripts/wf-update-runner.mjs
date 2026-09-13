@@ -9,6 +9,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT_ROOT = path.resolve(__dirname, '..', '..');
 const rawArgs = process.argv.slice(2);
 const JSON_OUT = rawArgs.includes('--json');
+const DEFAULT_UPDATE_TIMEOUT_MS = 120000;
+const UPDATE_TIMEOUT_EXIT = 3;
 
 function readFlagValue(args, flagName) {
   const idx = args.indexOf(flagName);
@@ -159,14 +161,28 @@ function discoverTargets(projectRoot) {
   return dedupeTargets(targets);
 }
 
-function runNode(root, scriptPath, args, { parseJson = false } = {}) {
+function parseTimeoutMs(args) {
+  const raw = readFlagValue(args, '--timeout-ms') || process.env.WF_UPDATE_TIMEOUT_MS;
+  if (!raw) return DEFAULT_UPDATE_TIMEOUT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_UPDATE_TIMEOUT_MS;
+}
+
+function remainingTimeout(deadlineAt) {
+  return Math.max(1, deadlineAt - Date.now());
+}
+
+function runNode(root, scriptPath, args, { parseJson = false, timeoutMs = DEFAULT_UPDATE_TIMEOUT_MS } = {}) {
   const result = spawnSync(process.execPath, [scriptPath, ...args], {
     cwd: root,
     encoding: 'utf8',
     env: process.env,
+    timeout: timeoutMs,
+    killSignal: 'SIGTERM',
   });
   const stdout = result.stdout || '';
   const stderr = result.stderr || '';
+  const timedOut = result.error?.code === 'ETIMEDOUT';
   let json = null;
   if (parseJson && stdout.trim()) {
     try {
@@ -175,10 +191,18 @@ function runNode(root, scriptPath, args, { parseJson = false } = {}) {
       json = { rawOutput: stdout };
     }
   }
+  if (timedOut && !json) {
+    json = {
+      status: 'timeout',
+      code: 'UPDATE_TIMEOUT',
+      message: `Update command exceeded the ${timeoutMs}ms deadline.`,
+    };
+  }
   return {
-    status: result.status ?? 1,
+    status: timedOut ? UPDATE_TIMEOUT_EXIT : (result.status ?? 1),
     stdout,
     stderr,
+    ...(timedOut ? { timedOut: true, errorCode: 'UPDATE_TIMEOUT' } : {}),
     ...(parseJson ? { json } : {}),
   };
 }
@@ -199,10 +223,10 @@ function withRepair(args) {
   return wantsRepair(args) ? args : [...args, '--repair'];
 }
 
-function runUpdateForTarget(target, forwardArgs) {
+function runUpdateForTarget(target, forwardArgs, deadlineAt) {
   const parseJson = forwardArgs.includes('--json');
   const script = updateScriptPath(target.root);
-  const first = runNode(target.root, script, forwardArgs, { parseJson });
+  const first = runNode(target.root, script, forwardArgs, { parseJson, timeoutMs: remainingTimeout(deadlineAt) });
   const runs = [{ command: `node Harness/scripts/wf-update-check.mjs ${forwardArgs.join(' ')}`.trim(), ...first }];
   let effective = first;
 
@@ -213,7 +237,7 @@ function runUpdateForTarget(target, forwardArgs) {
     && !wantsRepair(forwardArgs)
   ) {
     const repairArgs = withRepair(forwardArgs);
-    const repair = runNode(target.root, script, repairArgs, { parseJson });
+    const repair = runNode(target.root, script, repairArgs, { parseJson, timeoutMs: remainingTimeout(deadlineAt) });
     runs.push({ command: `node Harness/scripts/wf-update-check.mjs ${repairArgs.join(' ')}`.trim(), ...repair });
     effective = repair;
   }
@@ -221,7 +245,7 @@ function runUpdateForTarget(target, forwardArgs) {
   return { ...target, update: effective, runs };
 }
 
-function runPostUpdate(target, forwardArgs) {
+function runPostUpdate(target, forwardArgs, deadlineAt) {
   const post = [];
   const apply = wantsApply(forwardArgs);
   const syncScript = syncScriptPath(target.root);
@@ -229,23 +253,23 @@ function runPostUpdate(target, forwardArgs) {
     const syncArgs = apply ? ['--apply', '--json'] : ['--json'];
     post.push({
       step: 'sync-host-global',
-      ...runNode(target.root, syncScript, syncArgs, { parseJson: true }),
+      ...runNode(target.root, syncScript, syncArgs, { parseJson: true, timeoutMs: remainingTimeout(deadlineAt) }),
     });
   }
   if (apply && fs.existsSync(validateScriptPath(target.root))) {
     post.push({
       step: 'validate',
-      ...runNode(target.root, validateScriptPath(target.root), [], { parseJson: false }),
+      ...runNode(target.root, validateScriptPath(target.root), [], { parseJson: false, timeoutMs: remainingTimeout(deadlineAt) }),
     });
     post.push({
       step: 'manifest-audit',
-      ...runNode(target.root, validateScriptPath(target.root), ['--manifest-audit'], { parseJson: false }),
+      ...runNode(target.root, validateScriptPath(target.root), ['--manifest-audit'], { parseJson: false, timeoutMs: remainingTimeout(deadlineAt) }),
     });
   }
-  if (apply && target.scope !== 'global' && fs.existsSync(scanCleanScriptPath(target.root))) {
+  if (apply && fs.existsSync(scanCleanScriptPath(target.root))) {
     post.push({
       step: 'scan-clean',
-      ...runNode(target.root, scanCleanScriptPath(target.root), ['--json'], { parseJson: true }),
+      ...runNode(target.root, scanCleanScriptPath(target.root), ['--json'], { parseJson: true, timeoutMs: remainingTimeout(deadlineAt) }),
     });
   }
   return post;
@@ -274,6 +298,7 @@ function main() {
   const projectRoot = path.resolve(readFlagValue(rawArgs, '--project') || process.cwd());
   const forwardArgs = stripFlagWithValue(rawArgs, '--project');
   const effectiveArgs = JSON_OUT ? ensureJsonArg(forwardArgs) : forwardArgs;
+  const deadlineAt = Date.now() + parseTimeoutMs(rawArgs);
   const targets = discoverTargets(projectRoot);
 
   if (targets.length === 0) {
@@ -291,18 +316,26 @@ function main() {
   }
 
   const updatedTargets = targets.map(target => {
-    const withUpdate = runUpdateForTarget(target, effectiveArgs);
+    const withUpdate = runUpdateForTarget(target, effectiveArgs, deadlineAt);
     return {
       ...withUpdate,
-      post: runPostUpdate(withUpdate, effectiveArgs),
+      post: runPostUpdate(withUpdate, effectiveArgs, deadlineAt),
     };
   });
 
   const failures = [];
   for (const target of updatedTargets) {
-    if (target.update.status !== 0) failures.push(`${target.scope}: update exit ${target.update.status}`);
+    if (target.update.status !== 0) {
+      failures.push(target.update.timedOut
+        ? `${target.scope}: update timeout`
+        : `${target.scope}: update exit ${target.update.status}`);
+    }
     for (const post of target.post || []) {
-      if (post.status !== 0) failures.push(`${target.scope}: ${post.step} exit ${post.status}`);
+      if (post.status !== 0) {
+        failures.push(post.timedOut
+          ? `${target.scope}: ${post.step} timeout`
+          : `${target.scope}: ${post.step} exit ${post.status}`);
+      }
     }
   }
 
@@ -319,7 +352,11 @@ function main() {
 
   if (JSON_OUT) console.log(JSON.stringify(result, null, 2));
   else printText(result);
-  if (failures.length) process.exitCode = 1;
+  if (failures.length) {
+    const timedOut = updatedTargets.some(target => target.update.timedOut
+      || (target.post || []).some(post => post.timedOut));
+    process.exitCode = timedOut ? UPDATE_TIMEOUT_EXIT : 1;
+  }
 }
 
 main();

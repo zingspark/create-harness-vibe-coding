@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.9.3] - 2026-09-13
+
+- Add `/wf-search` as a direct, cross-runtime evidence-backed research command with fact, verify, compare, and troubleshoot modes.
+- Add stateless ledger validation and Markdown rendering with bounded search/read budgets, citation integrity, uncertainty handling, URL normalization, and safe escaping.
+- Add project/global runtime discovery, optional controller-only save targets, task evidence indexing, and protection for `Harness/research/search/**` during updates and removal.
+- Register the command across Claude Code, OpenCode, and Codex compatibility surfaces with mirrored Skill references and installation coverage.
+- Preserve the verified wf-ui runtime and agent-terminal behavior while extending the release checks for the new command.
+
+## [0.9.2] - 2026-09-09
+
+- Bind dispatched progress and result reporting to the service-issued worker capability and the current dispatch attempt, preserving canonical request/reply correlation and rejecting caller-forged identity.
+- Add native-first runtime model capability checks with explicit operator-configured extensions, exact provider/model identity, and fail-closed unverified or unavailable outcomes without silent model substitution.
+- Preserve requested effort and provider-native variants across PTY and structured chat launch/retry paths for Codex app-server, Claude stream-json, and OpenCode server adapters, with settings declarations protected from ordinary HTTP mutation.
+- Keep wf-ui agent-terminal and detached-backend handoff behavior covered by the release checks while retaining the existing ConPTY cleanup path.
+- Add bounded task-context, memory, research-policy, and route-budget regression checks with self-contained test fixtures; the observed cache route remains guarded by the frozen 36,000-byte limit.
+- Candidate verification remains bounded: the remaining intelligence goals, fresh-provider coverage, and real post-release benchmark are not claimed complete by this release entry.
+
+## [0.9.1] - 2026-09-08
+
+- Unify task lifecycle around `active`, `blocked`, and `closed`, while preserving compatibility with legacy task statuses and allowing multiple open tasks with one deterministic active focus.
+- Make explicit `/wf` and `/wf-max` task ownership sticky across sessions; direct, `wf-auto`, `wf-auto-spark`, `wf-review`, and `wf-browser` tasks remain outside the durable WF lifecycle unless explicitly entered with WF.
+- Add project-level task grouping, tags, dates, dependency-aware routing, `INDEX.json`/`INDEX.md`, and queryable task views so agents can load the relevant project context on demand.
+- Update wf-ui project and task views to expose active-task focus, WF-managed resume state, project counts, and task metadata without introducing a second persistence layer.
+- Simplify the Skills Hub surface by removing the unstable Market/install panel from the primary workflow view while retaining the standalone market module for compatibility.
+- Harden `wf-learn` as a command contract: load the routed memory first, separate instance facts from reusable methods, and require a `Probe -> Identify -> Act -> Verify` workflow with counterexample checks to prevent overfitting.
+- Keep `wf-review` on native Harness review agents with bounded fan-out and cross-review evidence, without delegating review execution to external CLI helpers.
+
 ## [0.8.21] - 2026-08-28
 
 - Add global-first install flow: `npm i -g create-harness-vibe-coding` once per machine, then `create-harness-vibe-coding init .` (or the new `/wf-init` direct command) per project; the global runtime is the single version source of truth and each project keeps only bridge docs plus its own state. `init --scope project` keeps the classic full project-level install for self-contained repos.

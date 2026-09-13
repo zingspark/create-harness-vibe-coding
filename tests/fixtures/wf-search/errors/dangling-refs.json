@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "question": "Dangling references must be rejected.",
+  "mode": "fact",
+  "depth": "quick",
+  "checkedAt": "2026-09-13T09:30:00.000Z",
+  "constraints": {},
+  "operations": [
+    { "id": "op-s1", "kind": "search", "tool": "websearch", "query": "q", "outcome": "success", "checkedAt": "2026-09-13T09:30:10.000Z" }
+  ],
+  "sources": [
+    {
+      "id": "src-1",
+      "url": "https://example.com/a",
+      "title": "A",
+      "sourceType": "official",
+      "publishedAt": null,
+      "retrievedAt": "2026-09-13T09:30:20.000Z",
+      "access": "full",
+      "excerpt": "E",
+      "locator": null,
+      "originGroup": null,
+      "operationIds": ["op-missing"]
+    }
+  ],
+  "claims": [
+    {
+      "id": "claim-1",
+      "text": "Fixture claim referencing a non-existent source.",
+      "kind": "fact",
+      "importance": "minor",
+      "supportIds": ["src-missing"],
+      "contradictionIds": ["src-also-missing"],
+      "dependsOnClaimIds": ["claim-missing"],
+      "status": "supported",
+      "confidence": "medium",
+      "confidenceReason": "Fixture for dangling references.",
+      "gaps": []
+    }
+  ],
+  "status": "complete",
+  "stopReason": "Fixture for dangling reference errors.",
+  "limitations": []
+}

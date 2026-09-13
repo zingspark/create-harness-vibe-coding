@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseTaskCapsule, parseTaskList } from './task-parser.mjs';
+import { parseTaskCapsule, parseTaskList, readActiveTaskId } from './task-parser.mjs';
 import { RUNTIME_DEFINITIONS } from './runtime-detector.mjs';
 import { listTerminalSessions, getSessionIndexSummary } from './terminal-store.mjs';
 import { deleteComponentNode } from './component-node-store.mjs';
@@ -8,12 +8,33 @@ import { deleteCapabilityNode } from './workflow-capability-node-store.mjs';
 import { deleteEventNode } from './workflow-event-node-store.mjs';
 import { normalizeNodeConfig, recommendSkills } from './node-config-store.mjs';
 import { componentNodeStatesForSnapshot, componentStateRefs, listLiveComponentNodes } from './component-node-store.mjs';
-import { eventNodeStates, eventStateRefs, listEventNodes } from './workflow-event-node-store.mjs';
+import { eventNodeStates, eventStateRefs, getEventNode, listEventNodes } from './workflow-event-node-store.mjs';
 import { capabilityNodeStates, capabilityStateRefs, listCapabilityNodes } from './workflow-capability-node-store.mjs';
 import { goalNodeStates, goalStateRefs, listGoalNodes } from './workflow-goal-node-store.mjs';
 import { workflowOperationsSnapshot } from './workflow-operation-store.mjs';
 import { buildAgentContext } from './workflow-agent-context.mjs';
 import { listRoleProfiles } from './workflow-node-types/role-profile-store.mjs';
+
+// Graph mutations are read-modify-write operations over a project-owned JSON
+// document.  Serialize callers in this process so two HTTP requests cannot
+// both derive the same next graph version.  The on-disk expectedVersion check
+// remains the cross-process guard; this lock is the low-cost in-process lane.
+const workflowGraphLocks = new Map();
+
+export async function withWorkflowGraphLock(projectRoot, operation) {
+  const key = String(projectRoot || '');
+  const previous = workflowGraphLocks.get(key) || Promise.resolve();
+  let release;
+  const current = new Promise(resolve => { release = resolve; });
+  workflowGraphLocks.set(key, current);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (workflowGraphLocks.get(key) === current) workflowGraphLocks.delete(key);
+  }
+}
 
 const DEFAULT_ROLE_GRAPH = {
   schemaVersion: 1,
@@ -1208,7 +1229,7 @@ const BUILT_IN_WORKFLOWS = [
     command: '/wf-review',
     label: 'WF Review',
     description: 'Independent review workflow for risks, regressions, and missing tests.',
-    defaultCeoPrompt: 'Act as the Harness /wf-review CEO. Inspect the current changes, ask terminal peers for independent findings when useful, and return prioritized review evidence.',
+    defaultCeoPrompt: 'Act as the Harness /wf-review controller. Inspect the current changes, dispatch the smallest useful bounded set of clean native reviewer subagents, deduplicate evidence, and return prioritized findings. Never invoke another CLI or reviewer recursion.',
   },
 ];
 
@@ -1590,6 +1611,96 @@ function normalizeWorkflowEdgeHandle(projectRoot, nodeTypes, nodeId, endpointRol
 
 function normalizeWorkflowEdgeDirection(value) {
   return String(value || '').trim() === 'source-to-target' ? 'source-to-target' : 'bidirectional';
+}
+
+// Graph-map is a legacy whole-document write surface, but it must not be a
+// second way around the typed workflow ontology.  Keep this check here (next
+// to the canonical edge normalizer) so every graph writer, including the
+// legacy PUT endpoint, applies the same Timer/Agent contract.
+export function assertWorkflowGraphEdgeOntology(projectRoot, graph = {}, edges = []) {
+  const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  const nodeIds = new Set(nodes.map(node => graphNodeId(node)).filter(Boolean));
+  const nodeTypes = workflowNodeTypeIndex(projectRoot, nodes);
+  const agentIds = new Set(nodes
+    .filter(node => node?.sessionId)
+    .map(node => graphNodeId(node))
+    .filter(Boolean));
+  const deletedIds = new Set((Array.isArray(graph?.deletedNodes) ? graph.deletedNodes : [])
+    .map(node => String(node?.nodeId || '').trim())
+    .filter(Boolean));
+
+  const fail = (message, code = 'INVALID_EDGE_ONTOLOGY', details = {}) => {
+    throw graphMapError(message, { statusCode: 400, code, details });
+  };
+
+  const normalized = [];
+  for (const rawEdge of Array.isArray(edges) ? edges : []) {
+    const endpoints = workflowEdgeEndpoints(rawEdge);
+    if (!endpoints) fail('Workflow edge requires from and to endpoints', 'INVALID_ENDPOINT');
+    if (!nodeIds.has(endpoints.from) && !deletedIds.has(endpoints.from)) {
+      fail(`Workflow edge source node not found: ${endpoints.from}`, 'ENDPOINT_NOT_FOUND', { nodeId: endpoints.from });
+    }
+    if (!nodeIds.has(endpoints.to) && !deletedIds.has(endpoints.to)) {
+      fail(`Workflow edge target node not found: ${endpoints.to}`, 'ENDPOINT_NOT_FOUND', { nodeId: endpoints.to });
+    }
+
+    const edge = normalizeWorkflowGraphEdge(projectRoot, rawEdge, nodes);
+    const relation = String(edge.relation || '').trim();
+    if (relation === 'event' || relation === 'control') {
+      const fromType = nodeTypes.get(endpoints.from) || '';
+      const toType = nodeTypes.get(endpoints.to) || '';
+      const direction = normalizeWorkflowEdgeDirection(edge.direction);
+      const sourceHandle = String(edge.sourceHandle || '').trim().toLowerCase();
+      const targetHandle = String(edge.targetHandle || '').trim().toLowerCase();
+      if (direction !== 'source-to-target') {
+        fail(`${relation} edge must use source-to-target direction`, 'INVALID_EDGE_ONTOLOGY', {
+          relation, direction,
+        });
+      }
+      if (relation === 'event') {
+        // GitHub triggers are distinct event sources, but valid event.in
+        // links remain useful for context. They must not be accepted through
+        // Timer's generic `event` handle or timer wakeup path.
+        const configuredGithubTrigger = fromType === 'github-trigger' && (() => {
+          try {
+            const current = getEventNode(projectRoot, endpoints.from);
+            return Boolean(current?.state?.repository?.fullName);
+          } catch {
+            return false;
+          }
+        })();
+        if ((fromType !== 'timer' && !configuredGithubTrigger) || !agentIds.has(endpoints.to)) {
+          fail('event edges must connect a configured Timer/GitHub Trigger -> Agent', 'INVALID_EDGE_ONTOLOGY', {
+            relation, from: endpoints.from, to: endpoints.to, fromType, toType,
+          });
+        }
+        if (sourceHandle && !['event', 'event:right', 'event:top', 'event:bottom'].includes(sourceHandle)) {
+          fail('Timer event edges require the event output handle', 'INVALID_EDGE_HANDLE', { relation, sourceHandle });
+        }
+        const allowedTargetHandles = fromType === 'github-trigger'
+          ? ['event.in']
+          : ['event', 'event.in', 'context', 'input'];
+        if (targetHandle && !allowedTargetHandles.includes(targetHandle)) {
+          fail('Timer event edges require an Agent event input handle', 'INVALID_EDGE_HANDLE', { relation, targetHandle });
+        }
+      } else {
+        if (!agentIds.has(endpoints.from) || toType !== 'timer') {
+          fail('control edges must connect Agent -> Timer', 'INVALID_EDGE_ONTOLOGY', {
+            relation, from: endpoints.from, to: endpoints.to, fromType, toType,
+          });
+        }
+        if (sourceHandle && !['context', 'control', 'output', 'input'].includes(sourceHandle)) {
+          fail('Timer control edges require the Agent context handle', 'INVALID_EDGE_HANDLE', { relation, sourceHandle });
+        }
+        if (targetHandle && !['config', 'config:left'].includes(targetHandle)) {
+          fail('Timer control edges require the config input handle', 'INVALID_EDGE_HANDLE', { relation, targetHandle });
+        }
+      }
+    }
+    normalized.push(edge);
+  }
+  assertUniqueWorkflowEdgePairs(normalized);
+  return normalized;
 }
 
 function relationFromEdge(edge) {
@@ -2285,6 +2396,15 @@ export function writeWorkflowGraphMap(projectRoot, graph = {}, options = {}) {
     : current.positions;
   const nodes = mergeStatefulGraphNodes(projectRoot, rawNodes, rawPositions)
     .filter(node => !graphNodeMatches(node, nodeIds, sessionIds));
+  // Validate before the legacy endpoint silently filters dangling edges.  A
+  // graph-map PUT may omit deleted nodes for compatibility, but it may not
+  // introduce an unknown endpoint or bypass the Timer/Agent edge ontology.
+  assertWorkflowGraphEdgeOntology(projectRoot, {
+    ...current,
+    ...graphPatch,
+    nodes,
+    deletedNodes,
+  }, rawEdges);
   let edges = normalizeWorkflowGraphEdges(
     projectRoot,
     filterEdgesForGraphNodes(rawEdges.filter(edge => !graphEdgeMatches(edge, nodeIds, sessionIds)), nodes),
@@ -2768,26 +2888,19 @@ function buildSessionGraph(projectRoot, workflowId, sessions) {
   };
 }
 
-function readActiveTaskId(projectRoot) {
-  const progressPath = path.join(projectRoot, 'Harness', 'PROGRESS.md');
-  try {
-    const content = fs.readFileSync(progressPath, 'utf8');
-    const marker = content.match(/## Active Task\s+^- ([^\r\n]+)/m);
-    if (marker) return marker[1].trim();
-  } catch {
-    return null;
-  }
-  return null;
-}
-
 function activeTask(projectRoot) {
   const tasksRoot = path.join(projectRoot, 'Harness', 'tasks');
   const activeTaskId = readActiveTaskId(projectRoot);
   if (activeTaskId) {
     const capsule = parseTaskCapsule(path.join(tasksRoot, activeTaskId));
-    if (capsule) return capsule;
+    if (capsule && capsule.resumeRequired) return capsule;
   }
-  return parseTaskList(tasksRoot)[0] || null;
+  // Never infer WF management from task recency. A legacy project without an
+  // active pointer may still resume its sole open managed task, but direct
+  // tasks and ambiguous multiple-managed-task projects stay unbound until the
+  // controller selects a focus explicitly.
+  const candidates = parseTaskList(tasksRoot).filter(task => task.resumeRequired);
+  return candidates.length === 1 ? candidates[0] : null;
 }
 
 function subagentModeForSnapshot(value) {
@@ -3064,6 +3177,10 @@ function buildWorkflowSnapshotInner(projectRoot, sessionRegistry) {
     workflowId,
     taskId: task?.taskId || null,
     mode: task?.mode || null,
+    wfManaged: Boolean(task?.wfManaged),
+    resumeRequired: Boolean(task?.resumeRequired),
+    taskProject: task?.project || null,
+    taskTags: Array.isArray(task?.tags) ? task.tags : [],
     phase: task?.phase || null,
     gate: task?.gate || null,
     rootAgentId: roleGraph.rootAgentId,

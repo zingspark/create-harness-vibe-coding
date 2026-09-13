@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "question": "Compare the built-in node:test runner with Jest for this repository.",
+  "mode": "compare",
+  "depth": "standard",
+  "checkedAt": "2026-09-13T10:00:00.000Z",
+  "constraints": {},
+  "operations": [
+    {
+      "id": "op-search-1",
+      "kind": "search",
+      "tool": "websearch",
+      "query": "node:test vs jest comparison",
+      "outcome": "success",
+      "checkedAt": "2026-09-13T10:01:00.000Z"
+    },
+    {
+      "id": "op-search-2",
+      "kind": "search",
+      "tool": "websearch",
+      "query": "node test runner adoption reports",
+      "outcome": "failed",
+      "checkedAt": "2026-09-13T10:02:00.000Z"
+    },
+    {
+      "id": "op-read-1",
+      "kind": "read",
+      "tool": "webfetch",
+      "url": "https://nodejs.org/api/test.html?utm_source=newsletter&keep=1#runner",
+      "outcome": "success",
+      "checkedAt": "2026-09-13T10:03:00.000Z"
+    },
+    {
+      "id": "op-read-2",
+      "kind": "read",
+      "tool": "webfetch",
+      "url": "https://community.example/t/123?fbclid=abc&sort=new",
+      "outcome": "success",
+      "checkedAt": "2026-09-13T10:04:00.000Z"
+    },
+    {
+      "id": "op-read-3",
+      "kind": "read",
+      "tool": "webfetch",
+      "url": "https://news.example/syndicated/node-test",
+      "outcome": "success",
+      "checkedAt": "2026-09-13T10:05:00.000Z"
+    }
+  ],
+  "sources": [
+    {
+      "id": "src-official",
+      "url": "https://nodejs.org/api/test.html?utm_source=newsletter&keep=1#runner",
+      "title": "Node.js test runner documentation",
+      "sourceType": "official",
+      "publishedAt": null,
+      "retrievedAt": "2026-09-13T10:03:00.000Z",
+      "access": "full",
+      "excerpt": "node:test provides a built-in test runner for Node.js.",
+      "locator": "#runner",
+      "originGroup": null,
+      "operationIds": ["op-search-1", "op-read-1"]
+    },
+    {
+      "id": "src-community",
+      "url": "https://community.example/t/123?fbclid=abc&sort=new",
+      "title": "Forum thread on test runners",
+      "sourceType": "community",
+      "publishedAt": "2026-08-01T00:00:00.000Z",
+      "retrievedAt": "2026-09-13T10:04:00.000Z",
+      "access": "snippet",
+      "excerpt": "One poster reports watcher flakiness.",
+      "locator": "#post-4",
+      "originGroup": null,
+      "operationIds": ["op-read-2"]
+    },
+    {
+      "id": "src-repost",
+      "url": "https://news.example/syndicated/node-test",
+      "title": "Syndicated article about node:test",
+      "sourceType": "news",
+      "publishedAt": "2026-08-05T00:00:00.000Z",
+      "retrievedAt": "2026-09-13T10:05:00.000Z",
+      "access": "excerpt",
+      "excerpt": "A syndicated write-up of the original blog post.",
+      "locator": "p/2",
+      "originGroup": "origin-blog-node-test",
+      "operationIds": ["op-read-3"]
+    }
+  ],
+  "claims": [
+    {
+      "id": "claim-fact",
+      "text": "Node.js ships a built-in test runner under node:test.",
+      "kind": "fact",
+      "importance": "major",
+      "supportIds": ["src-official"],
+      "contradictionIds": [],
+      "dependsOnClaimIds": [],
+      "status": "supported",
+      "confidence": "high",
+      "confidenceReason": "Official documentation read with full access.",
+      "gaps": []
+    },
+    {
+      "id": "claim-disputed",
+      "text": "Some community posts claim Jest is faster in all cases; other reports dispute this.",
+      "kind": "fact",
+      "importance": "minor",
+      "supportIds": ["src-community"],
+      "contradictionIds": ["src-repost"],
+      "dependsOnClaimIds": [],
+      "status": "disputed",
+      "confidence": "low",
+      "confidenceReason": "Conflicting evidence from a snippet and a syndicated repost.",
+      "gaps": ["No current benchmark comparison found."]
+    },
+    {
+      "id": "claim-inference",
+      "text": "For this repository, adopting node:test would remove one dev dependency.",
+      "kind": "inference",
+      "importance": "minor",
+      "supportIds": ["src-official", "src-repost"],
+      "contradictionIds": [],
+      "dependsOnClaimIds": ["claim-fact"],
+      "status": "supported",
+      "confidence": "medium",
+      "confidenceReason": "Derived from the official runner docs and a secondary write-up.",
+      "gaps": []
+    },
+    {
+      "id": "claim-obs",
+      "text": "Posters in one forum thread report watcher-mode flakiness.",
+      "kind": "community-observation",
+      "importance": "minor",
+      "supportIds": ["src-community"],
+      "contradictionIds": [],
+      "dependsOnClaimIds": [],
+      "status": "supported",
+      "confidence": "low",
+      "confidenceReason": "Single-thread community snippet.",
+      "gaps": ["Observation scope limited to one thread."]
+    }
+  ],
+  "status": "complete",
+  "stopReason": "Key question answered with direct official evidence and no unresolved major conflict.",
+  "limitations": ["The validator checks ledger self-consistency, not semantic truth."]
+}

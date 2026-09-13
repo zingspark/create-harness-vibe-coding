@@ -717,6 +717,32 @@ test('generated scaffold stores harness-owned payload under root Harness directo
   assert.match(plan, /## Task Index/);
 });
 
+test('AC-001 global installs record one bridge mode and one runtime mode', () => {
+  const root = tmpdir();
+  const targetDir = path.join(root, 'global-project');
+  const globalDir = path.join(root, 'global-runtime');
+  const hostGlobalDir = path.join(root, 'host-global');
+
+  const result = generate({
+    projectName: 'global-project',
+    targetDir,
+    installScope: 'global',
+    globalDir,
+    hostGlobalDir,
+  });
+
+  assert.equal(result.success, true, result.errors.join('\n'));
+  const bridge = JSON.parse(readRel(targetDir, 'Harness/.harness-version'));
+  const runtime = JSON.parse(readRel(globalDir, 'Harness/.harness-version'));
+
+  assert.equal(bridge.installScope, 'global');
+  assert.equal(bridge.installMode, 'bridge');
+  assert.equal(runtime.installScope, 'global');
+  assert.equal(runtime.installMode, 'runtime');
+  assert.equal(bridge.globalDir.replace(/\\/g, '/'), globalDir.replace(/\\/g, '/'));
+  assert.equal(runtime.globalDir.replace(/\\/g, '/'), globalDir.replace(/\\/g, '/'));
+});
+
 test('global install scope writes shared runtime while keeping task state project-local', () => {
   const root = tmpdir();
   const targetDir = path.join(root, 'global-project');

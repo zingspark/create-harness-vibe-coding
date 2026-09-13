@@ -1,0 +1,2 @@
+<!-- harness-memory: {"id":"boundary-method","kind":"method","scope":"project","when":"boundary checks","rule":"Keep boundary evidence bounded","avoid":"Do not read outside project","signals":["boundary","budget"],"evidenceRefs":["E-boundary"],"counterexample":{"scenario":"Input points outside project","outcome":"Reject it"},"verification":{"status":"passed","method":"boundary contract","evidenceRef":"E-boundary"},"status":"active"} -->
+- When boundary checks: Keep boundary evidence bounded. Avoid reading outside project. Signals: boundary, budget.

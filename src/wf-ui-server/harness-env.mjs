@@ -14,6 +14,11 @@ export function buildHarnessEnvSession({
   taskId = '',
   peerId = '',
   sessionId = '',
+  dispatchId = '',
+  dispatchAttempt = 0,
+  workerCapability = '',
+  requestId = '',
+  replyTo = '',
 } = {}, { term = 'xterm-256color' } = {}) {
   return {
     ...process.env,
@@ -31,6 +36,11 @@ export function buildHarnessEnvSession({
     HARNESS_PEER_TASK_ID: taskId || '',
     CLAUDE_PEER_ID: peerId,
     HARNESS_PEER_SESSION_ID: sessionId,
+    HARNESS_DISPATCH_ID: dispatchId || '',
+    HARNESS_DISPATCH_ATTEMPT: dispatchId && Number.isFinite(Number(dispatchAttempt)) ? String(Number(dispatchAttempt)) : '',
+    HARNESS_WORKER_CAPABILITY: workerCapability || '',
+    HARNESS_DISPATCH_REQUEST_ID: requestId || '',
+    HARNESS_DISPATCH_REPLY_TO: replyTo || '',
     TERM: term,
   };
 }

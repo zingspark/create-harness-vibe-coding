@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "question": "",
+  "mode": "fact",
+  "depth": "quick",
+  "checkedAt": "2026-09-13T09:00:00.000Z",
+  "constraints": {},
+  "operations": [
+    { "id": "op-s1", "kind": "search", "tool": "websearch", "query": "q", "outcome": "success", "checkedAt": "2026-09-13T09:00:10.000Z" }
+  ],
+  "sources": [
+    {
+      "id": "src-doc",
+      "url": "https://docs.example/q",
+      "title": "Q docs",
+      "sourceType": "official",
+      "publishedAt": null,
+      "retrievedAt": "2026-09-13T09:00:20.000Z",
+      "access": "full",
+      "excerpt": "Doc excerpt.",
+      "locator": null,
+      "originGroup": null,
+      "operationIds": ["op-s1"]
+    }
+  ],
+  "claims": [
+    {
+      "id": "claim-1",
+      "text": "",
+      "kind": "fact",
+      "importance": "minor",
+      "supportIds": ["src-doc"],
+      "contradictionIds": [],
+      "dependsOnClaimIds": [],
+      "status": "supported",
+      "confidence": "high",
+      "confidenceReason": "Fixture: empty question and empty claim text.",
+      "gaps": []
+    }
+  ],
+  "status": "complete",
+  "stopReason": "Fixture for missing-required-field errors.",
+  "limitations": []
+}

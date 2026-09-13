@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "question": "Determine the exact release date of library Z v2.",
+  "mode": "fact",
+  "depth": "standard",
+  "checkedAt": "2026-09-13T13:00:00.000Z",
+  "constraints": {},
+  "operations": [
+    { "id": "op-s1", "kind": "search", "tool": "websearch", "query": "library z v2 release date", "outcome": "success", "checkedAt": "2026-09-13T13:00:10.000Z" },
+    { "id": "op-r1", "kind": "read", "tool": "webfetch", "url": "https://community.example/t/999", "outcome": "success", "checkedAt": "2026-09-13T13:00:20.000Z" }
+  ],
+  "sources": [
+    {
+      "id": "src-snippet",
+      "url": "https://community.example/t/999",
+      "title": "Search-result snippet only",
+      "sourceType": "community",
+      "publishedAt": null,
+      "retrievedAt": "2026-09-13T13:00:20.000Z",
+      "access": "snippet",
+      "excerpt": "Library Z v2 shipped earlier this year.",
+      "locator": null,
+      "originGroup": null,
+      "operationIds": ["op-s1", "op-r1"]
+    }
+  ],
+  "claims": [
+    {
+      "id": "claim-1",
+      "text": "Library Z v2 shipped earlier this year.",
+      "kind": "fact",
+      "importance": "major",
+      "supportIds": ["src-snippet"],
+      "contradictionIds": [],
+      "dependsOnClaimIds": [],
+      "status": "supported",
+      "confidence": "medium",
+      "confidenceReason": "Only a snippet was available.",
+      "gaps": ["No full-text source retrieved."]
+    }
+  ],
+  "status": "complete",
+  "stopReason": "Fixture: snippet-only support for a major fact claim.",
+  "limitations": ["Fixture for WFR-EVD001."]
+}

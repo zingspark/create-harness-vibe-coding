@@ -39,6 +39,24 @@ function capsuleDir(projectRoot, taskId, peerId) {
   return path.join(projectRoot, 'Harness', 'tasks', taskId, 'peers', peerId);
 }
 
+function readEventRows(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return [];
+    return fs.readFileSync(filePath, 'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
+  } catch {
+    return [];
+  }
+}
+
+function terminalPeerStatus(status) {
+  const normalized = String(status || '').toLowerCase();
+  if (['succeeded', 'success', 'completed', 'complete'].includes(normalized)) return 'succeeded';
+  if (['failed', 'error', 'failure'].includes(normalized)) return 'failed';
+  if (['cancelled', 'canceled', 'stopped'].includes(normalized)) return 'cancelled';
+  if (normalized === 'interrupted') return 'interrupted';
+  return null;
+}
+
 /**
  * Create a peer capsule directory with REQUEST.json and STATE.json.
  *
@@ -90,8 +108,11 @@ export function writePeerEvent(projectRoot, taskId, peerId, event) {
     throw new Error(`Capsule directory does not exist for ${taskId}/${peerId}`);
   }
 
+  const rows = readEventRows(path.join(dir, 'events.jsonl'));
+  const nextSeq = rows.reduce((max, row) => Math.max(max, Number(row?.seq) || 0), 0) + 1;
   const eventLine = JSON.stringify({
     ...event,
+    seq: Math.max(nextSeq, Number(event.seq) || 0),
     timestamp: event.timestamp || new Date().toISOString(),
   });
 
@@ -114,12 +135,46 @@ export function writePeerResult(projectRoot, taskId, peerId, result) {
     throw new Error(`Capsule directory does not exist for ${taskId}/${peerId}`);
   }
 
+  const resultPath = path.join(dir, 'RESULT.json');
+  if (fs.existsSync(resultPath)) {
+    try { return JSON.parse(fs.readFileSync(resultPath, 'utf8')); } catch { /* rewrite malformed result */ }
+  }
+
   const resultPayload = {
     ...result,
     completedAt: new Date().toISOString(),
   };
 
-  fs.writeFileSync(path.join(dir, 'RESULT.json'), JSON.stringify(resultPayload, null, 2), 'utf-8');
+  fs.writeFileSync(resultPath, JSON.stringify(resultPayload, null, 2), 'utf-8');
+  const terminal = terminalPeerStatus(result.status);
+  if (terminal && (result.dispatchId || result.updateState === true)) {
+    updatePeerState(projectRoot, taskId, peerId, terminal, { resultAt: resultPayload.completedAt });
+  }
+  return resultPayload;
+}
+
+/**
+ * Update the peer lifecycle without allowing a terminal state to be replaced.
+ * Task STATE remains owned by task-state.mjs and is never modified here.
+ */
+export function updatePeerState(projectRoot, taskId, peerId, status, patch = {}) {
+  validateIds(taskId, peerId);
+  const dir = capsuleDir(projectRoot, taskId, peerId);
+  if (!fs.existsSync(dir)) throw new Error(`Capsule directory does not exist for ${taskId}/${peerId}`);
+  const statePath = path.join(dir, 'STATE.json');
+  let state = {};
+  try { state = JSON.parse(fs.readFileSync(statePath, 'utf8')); } catch { /* create below */ }
+  const currentTerminal = terminalPeerStatus(state.status);
+  const requestedTerminal = terminalPeerStatus(status);
+  if (currentTerminal && requestedTerminal && currentTerminal !== requestedTerminal) return state;
+  const next = {
+    ...state,
+    ...patch,
+    status: requestedTerminal || String(status || state.status || 'starting'),
+    updatedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(statePath, JSON.stringify(next, null, 2), 'utf-8');
+  return next;
 }
 
 /**

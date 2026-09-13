@@ -11,6 +11,7 @@ const CHECKSUM_EXCLUDE = [
   /^Harness\/PROGRESS\.md$/,
   /^Harness\/tasks\//,
   /^Harness\/memory\//,
+  /^Harness\/research\/search\//,
   /^Harness\/research\/PRD\.md$/,
   /^Harness\/research\/research-results\.md$/,
   /^Harness\/architecture\.md$/,
@@ -375,10 +376,11 @@ Project settings override global settings. Existing user-authored files at Harne
   ];
 }
 
-function installMetadata({ installScope, resolvedGlobalDir, hostPlans = [] }) {
-  if (installScope !== 'global') return { installScope: 'project' };
+function installMetadata({ installScope, resolvedGlobalDir, hostPlans = [], installMode = undefined }) {
+  if (installScope !== 'global') return { installScope: 'project', installMode: installMode || 'project' };
   return {
     installScope: 'global',
+    installMode: installMode || 'runtime',
     globalDir: normalizePath(resolvedGlobalDir),
     copyMode: 'copy',
     projectState: {
@@ -1211,7 +1213,18 @@ export function generate({
   }
 
   try {
-    const metadata = installMetadata({ installScope: normalizedInstallScope, resolvedGlobalDir, hostPlans });
+    const projectMetadata = installMetadata({
+      installScope: normalizedInstallScope,
+      resolvedGlobalDir,
+      hostPlans,
+      installMode: normalizedInstallScope === 'global' ? 'bridge' : 'project',
+    });
+    const runtimeMetadata = installMetadata({
+      installScope: normalizedInstallScope,
+      resolvedGlobalDir,
+      hostPlans,
+      installMode: 'runtime',
+    });
     const projectWrite = writeGeneratedPlan({
       plan,
       fileSpecs,
@@ -1219,7 +1232,7 @@ export function generate({
       resolvedDir,
       vars,
       optional,
-      metadata,
+      metadata: projectMetadata,
     });
     created.push(...projectWrite.created);
 
@@ -1233,7 +1246,7 @@ export function generate({
         resolvedDir: resolvedGlobalDir,
         vars,
         optional,
-        metadata,
+        metadata: runtimeMetadata,
         createdPrefix: 'global:',
       });
       created.push(...globalWrite.created);
@@ -1247,7 +1260,7 @@ export function generate({
         resolvedDir: hostPlan.root,
         vars,
         optional,
-        metadata,
+        metadata: runtimeMetadata,
         createdPrefix: `host:${hostPlan.host}:`,
       });
       created.push(...hostWrite.created);

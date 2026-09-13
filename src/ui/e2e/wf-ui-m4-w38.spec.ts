@@ -786,7 +786,9 @@ test.describe('WF UI M4 W38 frontend integration', () => {
     await expect(overlay).toHaveAttribute('data-mode', 'hub');
 
     await expect.poll(() => network.skillsHubRequests.length).toBe(1);
-    await expect(overlay.locator('[data-testid="workflow-skills-overlay-skill-toggle"]').first()).toBeDisabled();
+    // Hub Installed rows are compose inputs: users can stage skills before
+    // dragging the draft chip onto the canvas (AC-004 skills-hub drag).
+    await expect(overlay.locator('[data-testid="workflow-skills-overlay-skill-toggle"]').first()).toBeEnabled();
     await expect(overlay.getByText('W38 Alpha Skill')).toBeVisible();
 
     // Groups tab lists hub groups; picking an existing group opens group mode.

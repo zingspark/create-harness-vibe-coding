@@ -1,0 +1,24 @@
+{
+  "taskId": "install-fixture",
+  "status": "active",
+  "phase": "verify",
+  "goal": "Verify installed Harness intelligence scripts",
+  "nextAction": "Run the isolated project pack",
+  "context": {
+    "intent": {
+      "original": "Keep installed context and policy execution project-local",
+      "current": "Execute the generated scripts without importing the development checkout",
+      "changes": []
+    },
+    "constraints": ["Do not read raw logs", "Keep context bounded"],
+    "facts": [],
+    "assumptions": [],
+    "decisions": [],
+    "evidence": [],
+    "attempts": [],
+    "handoff": {
+      "summary": "The isolated project is ready for script execution",
+      "unresolved": []
+    }
+  }
+}

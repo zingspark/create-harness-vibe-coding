@@ -289,6 +289,33 @@ function markdownRuntimeNodeRecord(nodeId: string): JsonRecord {
   };
 }
 
+// The first AC-005 tests exercise the legacy settings surface for a
+// terminal-session node. Keep that runtime identity explicit: the real app
+// resolves terminal-session nodes from this endpoint before choosing the
+// settings renderer, so an unmocked 404 would leave the test in the loading
+// state instead of testing the panel contract. AC-001 tests below register
+// their own agent/markdown responses after this default route.
+function terminalRuntimeNodeRecord(): JsonRecord {
+  return {
+    nodeId: graphNodeId,
+    kind: 'terminal-session',
+    version: 1,
+    lifecycle: 'live',
+    status: { state: 'running', updatedAt: '2026-08-01T00:00:00.000Z' },
+    sessionId,
+    graph: { position: { x: 520, y: 180 }, handles: [], connections: [] },
+    stateRef: { path: `Harness/a2a/nodes/${sessionId}`, revision: 0 },
+    settings: { schemaId: 'terminal-session-settings', values: baseNodeConfig, revision: 1 },
+    capabilities: [],
+    ui: {
+      previewKind: 'terminal-session',
+      settingsPanel: 'legacy-node-settings',
+      testId: 'workflow-node',
+      labels: { title: 'M2 Agent' },
+    },
+  };
+}
+
 function workspaceEntries(relPath: string) {
   const normalized = relPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
   const table: Record<string, unknown[]> = {
@@ -346,6 +373,12 @@ async function installWorkflowFixture(page: Page): Promise<HarnessNetwork> {
   }]));
   await page.route('**/api/a2a/snapshot**', route => jsonResponse(route, workflowSnapshot()));
   await page.route('**/api/a2a/graph-map**', route => jsonResponse(route, { ok: true, revision: 2 }));
+  // Default runtime identity for the legacy panel tests. Tests that assert
+  // component settings register a more specific response after the fixture.
+  await page.route(`**/api/workflow/nodes/${graphNodeId}`, route => jsonResponse(route, {
+    ok: true,
+    node: terminalRuntimeNodeRecord(),
+  }));
   await page.route('**/api/sessions?all=1**', route => jsonResponse(route, workflowSnapshot().sessions));
   await page.route('**/api/terminals/**/range**', route => jsonResponse(route, {
     entries: [{ seq: 1, stream: 'stdout', data: '\r\nM2 terminal fixture ready\r\n' }],

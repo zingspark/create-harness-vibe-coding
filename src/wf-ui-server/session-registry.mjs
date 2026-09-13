@@ -49,6 +49,8 @@ export class SessionRegistry {
   constructor() {
     /** @type {Map<string, object>} */
     this._sessions = new Map();
+    /** @type {Map<string, object>} */
+    this._dispatches = new Map();
     /** @type {Map<string, Promise<void>>} */
     this._locks = new Map();
   }
@@ -70,6 +72,35 @@ export class SessionRegistry {
         this._locks.delete(key);
       }
     }
+  }
+
+  /**
+   * Serialize an opt-in dispatch key.  Session locks remain keyed by session
+   * id; dispatch locks close the race before a session id exists.
+   */
+  withDispatchLock(dispatchKey, fn) {
+    return this.withLock(`dispatch:${String(dispatchKey || '')}`, fn);
+  }
+
+  getDispatch(dispatchKey) {
+    return this._dispatches.get(String(dispatchKey || '')) || null;
+  }
+
+  setDispatch(dispatchKey, record) {
+    const key = String(dispatchKey || '');
+    if (!key) throw new Error('dispatchKey is required');
+    const next = { ...(record || {}), key };
+    this._dispatches.set(key, next);
+    return next;
+  }
+
+  updateDispatch(dispatchKey, patch = {}) {
+    const key = String(dispatchKey || '');
+    const current = this._dispatches.get(key);
+    if (!current) return null;
+    const next = { ...current, ...patch, key };
+    this._dispatches.set(key, next);
+    return next;
   }
 
   /**
@@ -122,10 +153,26 @@ export class SessionRegistry {
     graphContextPath = '',
     parentAgentId = null,
     parentNodeId = null,
+    parentSessionId = null,
     nodeHomePath = '',
     nodeHomeRel = '',
     nodeInitPath = '',
     nodeInitRel = '',
+    dispatchId = null,
+    dispatchKey = null,
+    dispatchFingerprint = null,
+    attempt = 0,
+    dispatchRequestId = '',
+    dispatchReplyTo = '',
+    requested = null,
+    effective = null,
+    modelCapabilitySourceKind = null,
+    modelCapabilityVerificationLevel = null,
+    effort = '',
+    transport = '',
+    contextPackPath = '',
+    contextRefs = null,
+    initialPrompt = '',
   }) {
     if (!ALLOWED_RUNTIMES.has(runtime)) {
       throw new Error(`Invalid runtime '${runtime}'. Must be one of: ${[...ALLOWED_RUNTIMES].join(', ')}`);
@@ -186,11 +233,13 @@ export class SessionRegistry {
       graphContextPath,
       parentAgentId,
       parentNodeId,
+      parentSessionId,
       nodeHomePath,
       nodeHomeRel,
       nodeInitPath,
       nodeInitRel,
       status: 'starting',
+      dispatchStatus: dispatchId ? 'starting' : null,
       cols,
       rows,
       uiMode: resolvedUiMode,
@@ -212,6 +261,21 @@ export class SessionRegistry {
       wsClientCount: 0,
       inputOwnerId: '',
       ptySessionId: sessionId,
+      dispatchId: dispatchId || null,
+      dispatchKey: dispatchKey || null,
+      dispatchFingerprint: dispatchFingerprint || null,
+      attempt: Number(attempt || 0),
+      dispatchRequestId: String(dispatchRequestId || ''),
+      dispatchReplyTo: String(dispatchReplyTo || ''),
+      requested: requested && typeof requested === 'object' ? requested : null,
+      effective: effective && typeof effective === 'object' ? effective : null,
+      modelCapabilitySourceKind: String(modelCapabilitySourceKind || '') || null,
+      modelCapabilityVerificationLevel: String(modelCapabilityVerificationLevel || '') || null,
+      effort: String(effort || ''),
+      transport: String(transport || (resolvedUiMode === 'chat' ? 'chat' : 'pty')),
+      contextPackPath: String(contextPackPath || ''),
+      contextRefs: Array.isArray(contextRefs) ? contextRefs : [],
+      initialPrompt: String(initialPrompt || ''),
     };
 
     this._sessions.set(sessionId, session);
@@ -259,6 +323,15 @@ export class SessionRegistry {
       }
     }
     session.updatedAt = new Date().toISOString();
+    if (session.dispatchKey && this._dispatches.has(session.dispatchKey)) {
+      const record = this._dispatches.get(session.dispatchKey);
+      this._dispatches.set(session.dispatchKey, {
+        ...record,
+        sessionId: session.sessionId,
+        attempt: Number(session.attempt || record.attempt || 0),
+        status: session.dispatchStatus || session.status,
+      });
+    }
   }
 
   /**
@@ -278,9 +351,20 @@ export class SessionRegistry {
     const session = this._sessions.get(sessionId);
     if (!session) return null;
     this._sessions.delete(sessionId);
+    const stoppedStatus = session.dispatchId ? 'cancelled' : 'stopped';
+    if (session.dispatchKey && this._dispatches.has(session.dispatchKey)) {
+      const record = this._dispatches.get(session.dispatchKey);
+      this._dispatches.set(session.dispatchKey, {
+        ...record,
+        sessionId,
+        attempt: Number(session.attempt || record.attempt || 0),
+        status: stoppedStatus,
+      });
+    }
     return {
       ...session,
-      status: 'stopped',
+      status: stoppedStatus,
+      dispatchStatus: session.dispatchId ? 'cancelled' : session.dispatchStatus,
       stoppedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };

@@ -156,7 +156,7 @@ test('reconcile dry-run reports drift and apply repairs STATE plus root index', 
 
   const doneState = JSON.parse(readRel(root, 'Harness/tasks/task-finish-done/STATE.json'));
   const blockedState = JSON.parse(readRel(root, 'Harness/tasks/task-blocked-input/STATE.json'));
-  assert.equal(doneState.status, 'verified');
+  assert.equal(doneState.status, 'closed');
   assert.equal(doneState.phase, 'verified');
   assert.equal(blockedState.status, 'blocked');
   assert.equal(blockedState.phase, 'blocked');
@@ -231,7 +231,7 @@ test('transition command reports its command label and updates state by default'
   assert.equal(payload.command, 'transition');
   assert.equal(payload.activeTask, null);
   const state = JSON.parse(readRel(root, 'Harness/tasks/task-keep-active/STATE.json'));
-  assert.equal(state.status, 'verified');
+  assert.equal(state.status, 'closed');
   assert.equal(state.phase, 'verified');
   assert.match(readRel(root, 'Harness/tasks/task-keep-active/PROGRESS.md'), /- Phase: Verified/);
 });
@@ -265,7 +265,7 @@ test('archive-tasks compatibility help keeps old command surface', () => {
   assert.match(result.stdout, /--apply/);
 });
 
-test('validate-harness strict reports task-state drift with task-state guidance', () => {
+test('validate-harness strict accepts multiple active task capsules', () => {
   const root = generateProject();
   writeRel(root, 'Harness/PROGRESS.md', progress('task-keep-active', [
     { id: 'task-keep-active', goal: 'Keep active', phase: 'Implementation' },
@@ -280,15 +280,15 @@ test('validate-harness strict reports task-state drift with task-state guidance'
     state: { status: 'active', phase: 'verified' },
   });
 
-  const normal = runNode(root, 'Harness/scripts/validate-harness.mjs');
+  const normal = runTaskState(root, ['validate', '--json']);
   assert.equal(normal.status, 0);
-  assert.match(`${normal.stdout}\n${normal.stderr}`, /Warning: Harness\/tasks\/task-drift-active\/STATE\.json is active/);
+  const normalPayload = jsonResult(normal);
+  assert.equal(normalPayload.ok, true);
+  assert.equal(normalPayload.tasks.filter(task => task.status === 'active').length, 2);
 
-  const strict = runNode(root, 'Harness/scripts/validate-harness.mjs', ['--strict']);
-  assert.notEqual(strict.status, 0);
-  const output = `${strict.stdout}\n${strict.stderr}`;
-  assert.match(output, /STATE\.json is active but Harness\/PROGRESS\.md Active Task/);
-  assert.match(output, /task-state\.mjs/);
+  const strict = runTaskState(root, ['validate', '--strict', '--json']);
+  assert.equal(strict.status, 0);
+  assert.equal(jsonResult(strict).ok, true);
 });
 
 test('list --json returns valid JSON with tasks array and dependsOn/blocks fields', () => {
@@ -355,6 +355,181 @@ test('open --json returns valid JSON with only open tasks', () => {
 
   const ids = payload.tasks.map(t => t.id).sort();
   assert.deepEqual(ids, ['task-active-one', 'task-active-two']);
+});
+
+test('fresh task records use canonical lifecycle, project tags, dates, and generated index', () => {
+  const root = generateProject();
+  writeRel(root, 'Harness/PROGRESS.md', progress(null, []));
+
+  const create = runTaskState(root, [
+    'record', 'task-indexed-feature', '--create', '--project', 'wf-core',
+    '--tag', 'routing,release', '--phase', 'implement', '--text', 'Build the task route', '--apply', '--json',
+  ]);
+  const payload = jsonResult(create);
+  assert.equal(create.status, 0);
+  assert.equal(payload.state.status, 'active');
+  assert.equal(payload.state.project, 'wf-core');
+  assert.equal(payload.state.phase, 'implement');
+  assert.deepEqual(payload.state.tags, ['routing', 'release']);
+  assert.match(payload.state.createdAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.match(payload.state.startedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(payload.state.closedAt, null);
+
+  const index = JSON.parse(readRel(root, 'Harness/tasks/INDEX.json'));
+  assert.deepEqual(index.projects['wf-core'], ['task-indexed-feature']);
+  assert.equal(index.tasks[0].status, 'active');
+  assert.equal(index.tasks[0].project, 'wf-core');
+  assert.deepEqual(index.tasks[0].tags, ['routing', 'release']);
+  assert.match(readRel(root, 'Harness/tasks/INDEX.md'), /Task Index \(generated\)/);
+
+  const query = runTaskState(root, ['query', 'release', '--project', 'wf-core', '--json']);
+  const queryPayload = jsonResult(query);
+  assert.equal(query.status, 0);
+  assert.equal(queryPayload.count, 1);
+  assert.equal(queryPayload.results[0].id, 'task-indexed-feature');
+  assert.ok(queryPayload.results[0].hits.some(hit => hit.file === 'STATE.json'));
+
+  const list = runTaskState(root, ['list', '--project', 'wf-core', '--status', 'active', '--json']);
+  const listPayload = jsonResult(list);
+  assert.equal(list.status, 0);
+  assert.deepEqual(listPayload.tasks.map(task => task.id), ['task-indexed-feature']);
+});
+
+test('AC-001 explicit WF task becomes the durable resume focus and advertises managed lifecycle', () => {
+  const root = generateProject();
+  writeRel(root, 'Harness/PROGRESS.md', progress(null, []));
+
+  const create = runTaskState(root, [
+    'record', 'task-wf-resume-contract', '--create', '--mode', 'wf', '--project', 'wf-core', '--apply', '--json',
+  ]);
+  const created = JSON.parse(create.stdout);
+  assert.equal(create.status, 0, create.stderr);
+  assert.equal(created.state.mode, 'wf');
+
+  const rootProgress = readRel(root, 'Harness/PROGRESS.md');
+  assert.match(rootProgress, /## Active Task\s+\r?\n\s*- task-wf-resume-contract/);
+
+  const listed = jsonResult(runTaskState(root, ['list', '--json']));
+  const task = listed.tasks.find(item => item.id === 'task-wf-resume-contract');
+  assert.ok(task);
+  assert.equal(task.wfManaged, true);
+  assert.equal(task.resumeRequired, true);
+
+  const opened = jsonResult(runTaskState(root, ['open', '--json']));
+  assert.equal(opened.tasks[0].wfManaged, true);
+  assert.equal(opened.tasks[0].resumeRequired, true);
+
+  const index = JSON.parse(readRel(root, 'Harness/tasks/INDEX.json'));
+  assert.equal(index.activeTask, 'task-wf-resume-contract');
+  assert.equal(index.resumeTask.taskId, 'task-wf-resume-contract');
+});
+
+test('AC-002 direct tasks cannot be promoted and managed WF tasks cannot exit or reopen', () => {
+  const root = generateProject();
+  writeRel(root, 'Harness/PROGRESS.md', progress(null, []));
+
+  const direct = runTaskState(root, [
+    'record', 'task-direct-forever', '--create', '--apply', '--json',
+  ]);
+  assert.equal(direct.status, 0);
+  const promote = runTaskState(root, [
+    'record', 'task-direct-forever', '--mode', 'wf', '--apply', '--json',
+  ]);
+  assert.notEqual(promote.status, 0);
+  assert.match(promote.stdout, /direct task|promot|WF-managed/i);
+
+  const managed = runTaskState(root, [
+    'record', 'task-wf-locked', '--create', '--mode', 'wf-max', '--apply', '--json',
+  ]);
+  assert.equal(managed.status, 0);
+  const downgrade = runTaskState(root, [
+    'record', 'task-wf-locked', '--mode', 'direct', '--apply', '--json',
+  ]);
+  assert.notEqual(downgrade.status, 0);
+  assert.match(downgrade.stdout, /cannot|downgrade|exit|WF/i);
+
+  const close = runTaskState(root, [
+    'transition', 'task-wf-locked', '--status', 'closed', '--phase', 'closeout', '--apply', '--json',
+  ]);
+  assert.equal(close.status, 0, close.stderr);
+  const reopen = runTaskState(root, [
+    'transition', 'task-wf-locked', '--status', 'active', '--phase', 'implement', '--apply', '--json',
+  ]);
+  assert.notEqual(reopen.status, 0);
+  assert.match(reopen.stdout, /closed|new task|reopen|WF/i);
+
+  const replacement = runTaskState(root, [
+    'record', 'task-wf-replacement', '--create', '--mode', 'wf', '--apply', '--json',
+  ]);
+  assert.equal(replacement.status, 0);
+  assert.equal(JSON.parse(readRel(root, 'Harness/tasks/task-wf-locked/STATE.json')).mode, 'wf-max');
+  assert.equal(JSON.parse(readRel(root, 'Harness/tasks/task-wf-replacement/STATE.json')).mode, 'wf');
+});
+
+test('open WF focus cannot be replaced by a direct task', () => {
+  const root = generateProject();
+  writeRel(root, 'Harness/PROGRESS.md', progress(null, []));
+  assert.equal(runTaskState(root, ['record', 'task-wf-focus', '--create', '--mode', 'wf', '--apply', '--json']).status, 0);
+  assert.equal(runTaskState(root, ['record', 'task-direct-sidecar', '--create', '--apply', '--json']).status, 0);
+
+  const result = runTaskState(root, ['set-active', 'task-direct-sidecar', '--apply', '--json']);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /cannot replace|WF-managed focus/i);
+  assert.match(readRel(root, 'Harness/PROGRESS.md'), /## Active Task\s+\r?\n\s*- task-wf-focus/);
+});
+
+test('validate rejects a direct focus while a managed WF task remains open', () => {
+  const root = generateProject();
+  writeRel(root, 'Harness/PROGRESS.md', progress(null, []));
+  assert.equal(runTaskState(root, ['record', 'task-wf-focus-validation', '--create', '--mode', 'wf', '--apply', '--json']).status, 0);
+  assert.equal(runTaskState(root, ['record', 'task-direct-focus-validation', '--create', '--apply', '--json']).status, 0);
+  writeRel(root, 'Harness/PROGRESS.md', progress('task-direct-focus-validation', [
+    { id: 'task-wf-focus-validation', goal: 'Managed focus', phase: 'Intake' },
+    { id: 'task-direct-focus-validation', goal: 'Direct focus', phase: 'Intake' },
+  ]));
+
+  const result = runTaskState(root, ['validate', '--strict', '--json']);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /Direct task.*active focus.*WF-managed/i);
+});
+
+test('only wf and wf-max opt tasks into the durable WF lifecycle', () => {
+  const root = generateProject();
+  writeRel(root, 'Harness/PROGRESS.md', progress(null, []));
+
+  const auto = runTaskState(root, [
+    'record', 'task-auto-capability', '--create', '--mode', 'wf-auto', '--apply', '--json',
+  ]);
+  assert.equal(auto.status, 0, auto.stderr);
+  const listed = jsonResult(runTaskState(root, ['list', '--json']));
+  const task = listed.tasks.find(item => item.id === 'task-auto-capability');
+  assert.equal(task.mode, 'wf-auto');
+  assert.equal(task.wfManaged, false);
+  assert.equal(task.resumeRequired, false);
+  assert.equal(JSON.parse(readRel(root, 'Harness/tasks/INDEX.json')).activeTask, null);
+});
+
+test('legacy group and status aliases remain readable while query and transition use canonical output', () => {
+  const root = generateProject();
+  writeRel(root, 'Harness/PROGRESS.md', progress('task-legacy-record', [
+    { id: 'task-legacy-record', goal: 'Legacy migration', phase: 'Verified' },
+  ]));
+  writeTask(root, 'task-legacy-record', {
+    phase: 'Verified',
+    state: { status: 'verified', group: 'legacy-project' },
+  });
+
+  const list = runTaskState(root, ['list', '--group', 'legacy-project', '--json']);
+  const listPayload = jsonResult(list);
+  assert.equal(list.status, 0);
+  assert.equal(listPayload.tasks[0].status, 'closed');
+  assert.equal(listPayload.tasks[0].project, 'legacy-project');
+
+  const transition = runTaskState(root, ['transition', 'task-legacy-record', '--status', 'active', '--phase', 'implement', '--json']);
+  assert.equal(transition.status, 0);
+  const state = JSON.parse(readRel(root, 'Harness/tasks/task-legacy-record/STATE.json'));
+  assert.equal(state.status, 'active');
+  assert.equal(state.closedAt, null);
 });
 
 test('validate --json returns valid JSON with ok/errors/warnings', () => {
@@ -469,7 +644,63 @@ test('record updates existing task state', () => {
 
   const updated = JSON.parse(readRel(root, 'Harness/tasks/task-update-me/STATE.json'));
   assert.equal(updated.nextAction, 'After text');
-  assert.equal(updated.status, 'verified');
+  assert.equal(updated.status, 'closed');
+});
+
+test('AC-005 closing a task synchronizes state, task progress, root progress, and index', () => {
+  const root = generateProject();
+  const taskId = 'task-close-view-sync';
+
+  const create = runTaskState(root, [
+    'record',
+    taskId,
+    '--create',
+    '--project',
+    'harness-foundations',
+    '--text',
+    'Close view synchronization',
+    '--apply',
+    '--json',
+  ]);
+  assert.equal(create.status, 0, create.stderr);
+
+  const close = runTaskState(root, [
+    'record',
+    taskId,
+    '--status',
+    'closed',
+    '--phase',
+    'closeout',
+    '--apply',
+    '--json',
+  ]);
+  assert.equal(close.status, 0, close.stderr);
+  const state = JSON.parse(readRel(root, `Harness/tasks/${taskId}/STATE.json`));
+  assert.equal(state.status, 'closed');
+  assert.ok(state.closedAt);
+  assert.match(readRel(root, `Harness/tasks/${taskId}/PROGRESS.md`), /Phase: Closeout/);
+  assert.match(readRel(root, 'Harness/PROGRESS.md'), new RegExp(`\\| ${taskId} \\| .* \\| Closeout \\| ${state.closedAt.slice(0, 10)} \\|`));
+  const index = JSON.parse(readRel(root, 'Harness/tasks/INDEX.json'));
+  assert.equal(index.tasks.find(task => task.id === taskId).status, 'closed');
+});
+
+test('AC-005 set-active rejects a closed task and preserves the current focus', () => {
+  const root = generateProject();
+  const closedId = 'task-closed-focus';
+  const activeId = 'task-open-focus';
+  writeTask(root, closedId, { state: { taskId: closedId, status: 'closed', phase: 'closeout', closedAt: '2026-01-02T00:00:00.000Z' } });
+  writeTask(root, activeId, { state: { taskId: activeId, status: 'active', phase: 'implement' } });
+  writeRel(root, 'Harness/PROGRESS.md', progress(activeId, [
+    { id: closedId, goal: 'Closed task', phase: 'Closeout', closed: '2026-01-02' },
+    { id: activeId, goal: 'Active task', phase: 'Implementation' },
+  ]));
+
+  const result = runTaskState(root, ['set-active', closedId, '--apply', '--json']);
+  const payload = jsonResult(result);
+
+  assert.equal(result.status, 1);
+  assert.match(payload.errors.join('\n'), /closed/i);
+  assert.match(readRel(root, 'Harness/PROGRESS.md'), new RegExp(`Active Task\\s+- ${activeId}`));
 });
 
 test('validate rejects duplicate queue membership on a closed task', () => {

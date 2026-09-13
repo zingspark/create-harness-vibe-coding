@@ -1,0 +1,7 @@
+{
+  "records": [
+    { "id": "a", "amountMinor": 1200, "currency": "CNY" },
+    { "id": "b", "amountMinor": 600, "currency": "CNY" },
+    { "id": "r", "amountMinor": -450, "currency": "CNY" }
+  ]
+}

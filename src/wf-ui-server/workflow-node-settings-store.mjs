@@ -38,6 +38,10 @@ const SCHEMAS = {
       watchChanges: { type: 'boolean', default: false },
     },
   },
+  display: {
+    schemaId: 'display-settings',
+    fields: {},
+  },
   timer: {
     schemaId: 'timer-settings',
     fields: {
@@ -126,7 +130,7 @@ function assertSettingsNodeId(nodeId, kindHint = '') {
 function assertKind(kind) {
   const value = String(kind || '').trim().toLowerCase();
   if (!Object.hasOwn(SCHEMAS, value)) {
-    throw new ComponentNodeError('Invalid settings kind; expected markdown, excalidraw, file, timer, github-trigger, skill-group, mcp-connector, goal, or agent');
+    throw new ComponentNodeError('Invalid settings kind; expected markdown, excalidraw, file, display, timer, github-trigger, skill-group, mcp-connector, goal, or agent');
   }
   return value;
 }

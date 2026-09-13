@@ -951,6 +951,7 @@ async function installWorkflowFixture(
     goals.set(state.nodeId, { ...state });
   }
   const deletedGoals = new Map<string, GoalState>();
+  let lastDeletedNodeId = '';
   const graphEdges: JsonRecord[] = [...(options.initialGraphEdges || [])];
   let capsuleDockLinks: JsonRecord[] = [];
   let graphVersion = 1;
@@ -994,15 +995,155 @@ async function installWorkflowFixture(
     status: 'open',
     phase: 'm3-red',
   }]));
-  const currentSnapshot = () => workflowSnapshot([...components.values()], {
-    includeInitialEdges: options.includeInitialEdges,
-    agentCanDelete: options.agentCanDelete,
-    events: [...timers.values()],
-    capabilities: [...capabilities.values()],
-    goals: [...goals.values()],
-    graphEdges,
-    capsuleDockLinks,
-  });
+  const currentSnapshot = () => {
+    const snapshot = workflowSnapshot([...components.values()], {
+      includeInitialEdges: options.includeInitialEdges,
+      agentCanDelete: options.agentCanDelete,
+      events: [...timers.values()],
+      capabilities: [...capabilities.values()],
+      goals: [...goals.values()],
+      graphEdges,
+      capsuleDockLinks,
+    }) as JsonRecord;
+    // The composition read model and the workflow graph snapshot are two
+    // views of the same fixture state. Keep their version aligned after a
+    // graph-map PUT so the UI's versioned composition cache cannot retain a
+    // stale projection.
+    if (snapshot.graph && typeof snapshot.graph === 'object') snapshot.graph.version = graphVersion;
+    return snapshot;
+  };
+  const currentComposition = () => {
+    const snapshot = currentSnapshot();
+    const graph = (snapshot.graph || {}) as JsonRecord;
+    const graphNodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+    const edges = Array.isArray(graph.edges) ? graph.edges : [];
+    const records = new Map<string, JsonRecord>();
+    const addRecord = (role: string, raw: JsonRecord, fallbackId = '') => {
+      const nodeId = String(raw.nodeId || raw.id || fallbackId || '').trim();
+      if (!nodeId) return;
+      const state = raw.state && typeof raw.state === 'object' ? raw.state : raw;
+      const title = String(raw.title || raw.label || state.title || nodeId).trim() || nodeId;
+      const status = role === 'timer'
+        ? (state.enabled ? 'enabled' : 'paused')
+        : String(raw.status || state.status || (role === 'agent' ? 'running' : 'unknown'));
+      records.set(nodeId, { id: nodeId, role, title, status, state, raw });
+    };
+    for (const timer of timers.values()) addRecord('timer', timer);
+    for (const goal of goals.values()) addRecord('goal', goal);
+    for (const node of graphNodes) {
+      if (node?.sessionId) {
+        const snapshotNode = (snapshot.nodes || []).find((item: JsonRecord) => item.id === node.nodeId);
+        addRecord('agent', { ...node, ...(snapshotNode || {}) }, String(node.nodeId || node.id || ''));
+      }
+    }
+    const nodesById = new Map(records);
+    const linksForNode = (nodeId: string, role: string) => {
+      const links: Record<string, JsonRecord[]> = { goals: [], timers: [], agents: [] };
+      for (const edge of edges) {
+        const source = String(edge.source || edge.from || '').trim();
+        const target = String(edge.target || edge.to || '').trim();
+        if (!source || !target || (source !== nodeId && target !== nodeId)) continue;
+        const peerId = source === nodeId ? target : source;
+        const peer = nodesById.get(peerId);
+        if (!peer || peer.role === role) continue;
+        const peerRole = peer.role as 'goal' | 'timer' | 'agent';
+        const link = {
+          nodeId: peer.id,
+          title: peer.title,
+          role: peerRole,
+          relation: String(edge.relation || 'wf-bridge'),
+          direction: String(edge.direction || 'bidirectional'),
+          status: peer.status,
+          edgeId: String(edge.id || ''),
+          handle: String(source === nodeId ? edge.sourceHandle || '' : edge.targetHandle || ''),
+        };
+        links[`${peerRole}s`].push(link);
+      }
+      for (const key of Object.keys(links)) {
+        links[key].sort((left, right) => String(left.title).localeCompare(String(right.title)) || String(left.nodeId).localeCompare(String(right.nodeId)));
+      }
+      return links;
+    };
+    const capsuleUiLinksForNode = (nodeId: string) => capsuleDockLinks
+      .filter(link => Array.isArray(link.nodeIds) && link.nodeIds.map(String).includes(nodeId))
+      .map(link => ({
+        linkId: String(link.id || link.linkId || `dock:${link.nodeIds.join('::')}`),
+        nodeIds: link.nodeIds.map(String),
+        anchorId: String(link.anchorId || ''),
+        draggedId: String(link.draggedId || ''),
+        uiOnly: true,
+      }));
+    const capsules: JsonRecord = {};
+    for (const record of records.values()) {
+      const links = linksForNode(record.id, record.role);
+      const roles = new Set([record.role, ...Object.keys(links).filter(key => links[key].length).map(key => key.slice(0, -1))]);
+      const mode = roles.has('goal') && roles.has('timer') && roles.has('agent')
+        ? 'goal-loop'
+        : roles.has('goal') && roles.has('timer')
+          ? 'goal-timer'
+          : roles.has('goal') && roles.has('agent')
+            ? 'goal-agent'
+            : roles.has('timer') && roles.has('agent')
+              ? 'timer-agent'
+              : 'standalone';
+      const uiLinks = capsuleUiLinksForNode(record.id);
+      const protocolSteps = [
+        ...(record.role === 'timer' || links.timers.length ? ['timer.fire', 'timer.dispatchWakeup'] : []),
+        ...(record.role === 'agent' || links.agents.length ? ['agent.readMessages'] : []),
+        ...(record.role === 'goal' || links.goals.length ? ['goal.read'] : []),
+      ];
+      capsules[record.id] = {
+        nodeId: record.id,
+        mode,
+        goals: links.goals,
+        timers: links.timers,
+        agents: links.agents,
+        stateLabel: record.role === 'timer'
+          ? (record.status === 'enabled' ? 'Timer on' : 'Timer paused')
+          : record.role === 'goal'
+            ? `Goal ${String(record.status).toLowerCase()}`
+            : record.status === 'running' ? 'Agent running' : 'Agent stopped',
+        nextLabel: record.role === 'timer' ? 'Next wakeup' : record.role === 'goal' ? 'Review Goal' : (links.timers.length ? 'Read next wakeup' : 'Backend composition'),
+        protocolSteps: [...new Set(protocolSteps.length ? protocolSteps : ['observe'])],
+        // An empty UI-only projection would tell the renderer to ignore its
+        // optimistic local dock links while the legacy graph-map fallback is
+        // still settling. Emit these fields only when the backend mock has a
+        // real dock link; subsequent composition reads then carry the full
+        // UI-only projection without masking the local compatibility path.
+        ...(uiLinks.length > 0 ? { docked: true, capsuleUiLinks: uiLinks } : {}),
+      };
+    }
+    return {
+      schemaVersion: 1,
+      compositionId: String(snapshot.workflowId || 'e2e-workflow-m3'),
+      graphVersion,
+      compositionVersion: graphVersion,
+      stateVersion: graphVersion,
+      fsm: { state: 'idle', transitions: [] },
+      timer: {
+        nodes: [...timers.values()].map(timer => ({
+          nodeId: timer.nodeId,
+          type: timer.type,
+          title: timer.title,
+          revision: timer.revision,
+          state: timer,
+        })),
+        count: timers.size,
+      },
+      agents: graphNodes.filter((node: JsonRecord) => node?.sessionId).map((node: JsonRecord) => ({
+        nodeId: node.nodeId || node.id,
+        sessionId: node.sessionId,
+        agentKind: node.agentKind || null,
+        runtime: node.runtime || null,
+        role: node.role || null,
+        status: node.status || 'stopped',
+      })),
+      edges,
+      lastTransitions: [],
+      capsules,
+    };
+  };
+  await page.route('**/api/workflow/compositions/**', route => jsonResponse(route, currentComposition()));
   await page.route('**/api/a2a/snapshot**', route => jsonResponse(route, currentSnapshot()));
   await page.route('**/api/a2a/graph-map**', async route => {
     const payload = route.request().postDataJSON() as JsonRecord || {};
@@ -1327,6 +1468,40 @@ async function installWorkflowFixture(
     const parts = url.pathname.split('/').filter(Boolean);
     const nodeId = parts[3] || '';
     if (route.request().method() === 'GET') {
+      if (nodeId === graphNodeId) {
+        return jsonResponse(route, {
+          ok: true,
+          node: {
+            nodeId: graphNodeId,
+            kind: 'agent',
+            version: 1,
+            lifecycle: 'live',
+            status: { state: 'running', updatedAt: '2026-08-01T00:00:00.000Z' },
+            sessionId,
+            graph: { position: { x: 620, y: 180 }, handles: [], connections: [] },
+            stateRef: { path: `Harness/a2a/nodes/${sessionId}`, revision: 0 },
+            settings: {
+              schemaId: 'agent-settings',
+              values: {
+                agentKind: currentNodeConfig.role || 'main',
+                displayName: 'M3 Agent',
+                roleTitle: 'ceo',
+                subagentMode: 'built-in-subagents',
+                skills: currentNodeConfig.skills,
+                capabilities: currentNodeConfig.capabilities,
+              },
+              revision: 1,
+            },
+            capabilities: ['agent.sendInput', 'agent.readOutput', 'agent.start', 'agent.stop', 'agent.delete'],
+            ui: {
+              previewKind: 'agent',
+              settingsPanel: 'agent-settings',
+              testId: 'workflow-agent-node',
+              labels: { title: 'M3 Agent' },
+            },
+          },
+        });
+      }
       const eventState = timers.get(nodeId);
       if (eventState) {
         return jsonResponse(route, {
@@ -1405,7 +1580,10 @@ async function installWorkflowFixture(
         network.nodeDeleteRequests.push({ nodeId });
         if (deleteActionDelayMs > 0) await new Promise(resolve => setTimeout(resolve, deleteActionDelayMs));
         const deletedGoal = goals.get(nodeId);
-        if (deletedGoal) deletedGoals.set(nodeId, deletedGoal);
+        if (deletedGoal) {
+          deletedGoals.set(nodeId, deletedGoal);
+          lastDeletedNodeId = nodeId;
+        }
         components.delete(nodeId);
         timers.delete(nodeId);
         capabilities.delete(nodeId);
@@ -1422,6 +1600,42 @@ async function installWorkflowFixture(
           node: restoredGoal ? goalRuntimeNodeSnapshot(restoredGoal, { x: 960, y: 180 }) : null,
           result: { ok: true, nodeId },
         });
+      }
+      if (action === 'graph.undo') {
+        const restoredGoal = lastDeletedNodeId ? deletedGoals.get(lastDeletedNodeId) : undefined;
+        if (!restoredGoal) return jsonResponse(route, { ok: true, action, applied: false });
+        goals.set(restoredGoal.nodeId, restoredGoal);
+        network.nodeRestoreRequests.push({ nodeId: restoredGoal.nodeId, payload: { action } });
+        return jsonResponse(route, {
+          ok: true,
+          action,
+          applied: true,
+          result: { nodeId: restoredGoal.nodeId },
+        });
+      }
+      if (action === 'graph.redo') {
+        const redoneGoal = lastDeletedNodeId ? goals.get(lastDeletedNodeId) : undefined;
+        if (!redoneGoal) return jsonResponse(route, { ok: true, action, applied: false });
+        deletedGoals.set(redoneGoal.nodeId, redoneGoal);
+        goals.delete(redoneGoal.nodeId);
+        network.nodeDeleteRequests.push({ nodeId: redoneGoal.nodeId });
+        return jsonResponse(route, {
+          ok: true,
+          action,
+          applied: true,
+          result: { nodeId: redoneGoal.nodeId },
+        });
+      }
+      // Newer UI code probes typed dock actions first and falls back to the
+      // graph-map PUT protocol when an older backend does not expose them.
+      // Keep this fixture on that honest compatibility path so the existing
+      // M3 assertions can observe the real HTTP graph-map mutation.
+      if (['agent.attachDock', 'agent.detachDock', 'agent.setDockSide'].includes(action)) {
+        return jsonResponse(route, {
+          ok: false,
+          code: 'UNKNOWN_ACTION',
+          message: `Unknown workflow node action: ${action}`,
+        }, 404);
       }
       const eventState = timers.get(nodeId);
       if (eventState) {
@@ -1820,14 +2034,13 @@ test.describe('WF UI M3 RED trusted component nodes acceptance', () => {
     const nodeMenu = page.getByTestId('workflow-node-context-menu');
     await expect(nodeMenu.locator('[data-testid="workflow-node-context-action"][data-action="skills-hub"]')).toBeVisible();
     await nodeMenu.locator('[data-testid="workflow-node-context-action"][data-action="skills-hub"]').click();
-    const targetedHub = page.getByTestId('workflow-capability-hub-drawer');
+    const targetedHub = page.getByTestId('workflow-skills-overlay');
     await expect(targetedHub).toBeVisible();
-    await expect(targetedHub).toHaveAttribute('data-hub-kind', 'skills');
-    await expect(targetedHub).toHaveAttribute('data-origin', 'agent-menu');
+    await expect(targetedHub).toHaveAttribute('data-mode', 'hub');
     await expect(targetedHub).toHaveAttribute('data-target-agent-id', graphNodeId);
-    await targetedHub.getByTestId('workflow-capability-hub-search').fill('wf');
-    const wfSkillItem = targetedHub.getByTestId('workflow-capability-hub-item').filter({ hasText: 'WF-UI Adapter' });
-    const attachSkill = wfSkillItem.getByTestId('workflow-capability-attach');
+    await targetedHub.getByTestId('workflow-skills-overlay-search').fill('wf');
+    const wfSkillItem = targetedHub.locator('[data-skill-id="skill:wf-ui"]');
+    const attachSkill = wfSkillItem.getByTestId('workflow-skills-overlay-attach');
     await expect(attachSkill).toBeEnabled();
     await attachSkill.click();
     await expect.poll(() => network.nodeConfigPatchRequests.length).toBe(1);
@@ -1836,8 +2049,9 @@ test.describe('WF UI M3 RED trusted component nodes acceptance', () => {
       skillPolicy: 'manual',
     }));
     await expect(attachSkill).toHaveText(/Attached/i);
-    const groupCreate = targetedHub.getByTestId('workflow-capability-hub-group').filter({ hasText: 'Workflow skills' });
-    await expect(groupCreate.getByTestId('workflow-capability-create-node')).toBeVisible();
+    await targetedHub.locator('[data-testid="workflow-skills-overlay-tab"][data-tab="groups"]').click();
+    const groupCreate = targetedHub.locator('[data-testid="workflow-skills-overlay-pick-group"][data-group-id="recommended:workflow"]');
+    await expect(groupCreate).toBeVisible();
     await groupCreate.click();
     await expect(page.getByTestId('workflow-capability-node')).toBeVisible();
     await expect(page.getByTestId('workflow-capability-node')).toHaveAttribute('data-skill-count', '1');
@@ -1853,6 +2067,9 @@ test.describe('WF UI M3 RED trusted component nodes acceptance', () => {
       && request.payload?.direction === 'bidirectional'
       && String(request.payload?.targetHandle || '').startsWith('capability:')
     ))).toBeTruthy();
+    // The unified overlay remains open after creating a group so the user can
+    // inspect it; close it explicitly before continuing with canvas creation.
+    await targetedHub.getByTestId('workflow-skills-overlay-close').click();
     const createCountAfterCapabilityPack = network.componentCreateRequests.length;
 
     await createComponentNode(page, 'markdown');
@@ -2562,6 +2779,12 @@ test.describe('WF UI M3 RED trusted component nodes acceptance', () => {
     await page.mouse.move(box!.x + 170, box!.y + 86);
     await page.mouse.up();
 
+    console.log('[AC-007-debug]', JSON.stringify({
+      graphMapRequests: network.graphMapRequests.map(request => request.payload?.positions || null),
+      componentBox: await componentNode.boundingBox(),
+      flowBox: await page.locator(`.react-flow__node[data-id="${markdownNodeId}"]`).boundingBox(),
+    }));
+
     await expect.poll(() => network.graphMapRequests.some(request => (
       request.payload?.positions?.[markdownNodeId]
       && typeof request.payload.positions[markdownNodeId].x === 'number'
@@ -3105,21 +3328,22 @@ test.describe('WF UI M3 RED trusted component nodes acceptance', () => {
     await agentNode.click();
     await agentNode.click({ button: 'right' });
     await page.locator('[data-testid="workflow-node-context-action"][data-action="settings"]').click();
-    await expect(page.getByTestId('workflow-node-settings')).toBeVisible();
+    const agentSettings = page.getByTestId('workflow-component-settings');
+    await expect(agentSettings).toBeVisible();
 
     const surfaces = [
       ['explorer', page.getByTestId('workflow-explorer-shell')],
       ['create-node', page.getByTestId('workflow-create-node')],
       ['markdown-editor', page.getByTestId('workflow-markdown-node-editor')],
       ['excalidraw-node', page.getByTestId('workflow-excalidraw-node')],
-      ['node-settings', page.getByTestId('workflow-node-settings')],
+      ['node-settings', agentSettings],
     ];
     for (const [label, surface] of surfaces) {
       await expectInViewport(page, surface as Locator, String(label));
     }
     await expect(page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).resolves.toBe(true);
 
-    await page.getByTestId('workflow-node-settings').locator('button[title="Close"]').click();
+    await agentSettings.locator('button[title="Close"]').click();
     const diagramNode = page.locator(`[data-testid="workflow-component-node"][data-node-id="${excalidrawNodeId}"]`);
     await diagramNode.click({ button: 'right' });
     await page.locator('[data-testid="workflow-node-context-action"][data-action="settings"]').click();

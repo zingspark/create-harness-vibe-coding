@@ -30,6 +30,12 @@ Expanded evidence required when triggered by high-risk changes, broad cross-file
 
 - Add Given/When/Then, selector contracts, migration notes, or release evidence only when the task risk requires it.
 
+## Context Contract
+
+- Keep the original intent immutable; record later changes under `STATE.json.context.intent.changes`.
+- Store only compact constraints, facts, assumptions, decisions, evidence pointers, attempts, and handoff items. Keep raw logs outside `STATE.json`.
+- The canonical next action lives at the root `STATE.json.nextAction`; context packs must reference it rather than add another next-action field.
+
 ## Risks
 
 | Risk | Mitigation | Status |

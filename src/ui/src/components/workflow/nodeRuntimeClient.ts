@@ -156,6 +156,69 @@ export interface WorkflowSkillInstallTarget {
   path: string;
 }
 
+export interface WorkflowSkillsMarketPack {
+  id: string;
+  provider: string;
+  providerLabel?: string;
+  slug: string;
+  packSlug: string;
+  name: string;
+  description: string;
+  category?: string;
+  tags?: string[];
+  skillCount: number;
+  installCount?: number;
+  updatedAt?: string;
+  detailUrl?: string;
+  manifestUrl?: string;
+  lockfileUrl?: string;
+  installable: boolean;
+  installed: boolean;
+  lockRef?: string;
+  installedTarget?: string;
+}
+
+export interface WorkflowSkillsMarketResponse {
+  ok: boolean;
+  schemaVersion: number;
+  kind: 'skills-market';
+  generatedAt: string;
+  provider: string;
+  providers: Array<{ id: string; label: string; hosted?: boolean }>;
+  query: { provider: string; q: string; limit: number };
+  installTargets: WorkflowSkillInstallTarget[];
+  summary: { packCount: number; totalPackCount: number; installedPackCount: number };
+  packs: WorkflowSkillsMarketPack[];
+}
+
+export interface WorkflowSkillsMarketInstallRequest {
+  packId?: string;
+  provider?: string;
+  packSlug?: string;
+  targetScope?: string;
+  createGroup?: boolean;
+  groupNodeId?: string;
+  groupTitle?: string;
+  groupDescription?: string;
+  position?: { x: number; y: number };
+  category?: string;
+  tags?: string[];
+}
+
+export interface WorkflowSkillsMarketInstallResponse {
+  ok: boolean;
+  schemaVersion: number;
+  kind: 'skills-market-install';
+  provider: string;
+  packSlug: string;
+  target: WorkflowSkillInstallTarget;
+  install?: Record<string, unknown>;
+  lockRef?: string;
+  installedSkills?: Array<{ id: string; name: string; title?: string }>;
+  installedFiles?: Array<Record<string, unknown>>;
+  group?: WorkflowRuntimeNodeResponse | null;
+}
+
 export interface WorkflowMcpHubSource {
   rootId: string;
   label: string;
@@ -232,8 +295,129 @@ export interface WorkflowMcpHubResponse {
 
 // API functions using existing apiJson from '../api'
 import { apiJson } from '../../api';
+import type { WorkflowCapsuleSummary } from '../../types';
 
 const BASE = '/api/workflow';
+
+/**
+ * Read-only projection of the backend composition read model.  The canvas
+ * uses this for status presentation only; it must never become a second
+ * source of truth for graph or runtime state.
+ */
+export interface WorkflowCompositionSnapshot {
+  readonly schemaVersion?: number;
+  readonly compositionId: string;
+  readonly graphVersion: number;
+  readonly compositionVersion: number;
+  readonly stateVersion: number;
+  readonly fsm: Readonly<{
+    state: string;
+    transitions: readonly WorkflowCompositionTransition[];
+  }>;
+  readonly timer: Readonly<{
+    nodes: readonly WorkflowCompositionTimer[];
+    count: number;
+  }>;
+  readonly agents: readonly WorkflowCompositionAgent[];
+  readonly edges: readonly WorkflowCompositionEdge[];
+  readonly lastTransitions: readonly WorkflowCompositionTransition[];
+  /** Backend-owned display projection; the UI only maps it for rendering. */
+  readonly capsules?: Readonly<Record<string, WorkflowCompositionCapsuleProjection>>;
+}
+
+export interface WorkflowCompositionTransition {
+  readonly transitionId?: string;
+  readonly compositionId?: string;
+  readonly nodeId?: string;
+  readonly action?: string;
+  readonly from?: string;
+  readonly to?: string;
+  readonly at?: string;
+  readonly [key: string]: unknown;
+}
+
+export interface WorkflowCompositionTimer {
+  readonly nodeId: string;
+  readonly type?: string;
+  readonly title?: string;
+  readonly revision?: number;
+  readonly state?: Record<string, unknown>;
+}
+
+export interface WorkflowCompositionAgent {
+  readonly nodeId: string;
+  readonly sessionId?: string | null;
+  readonly agentKind?: string | null;
+  readonly runtime?: string | null;
+  readonly role?: string | null;
+  readonly status?: string;
+}
+
+export interface WorkflowCompositionEdge {
+  readonly id: string;
+  readonly from?: string;
+  readonly to?: string;
+  readonly source?: string;
+  readonly target?: string;
+  readonly relation?: string;
+  readonly direction?: WorkflowEdgeDirection;
+  readonly sourceHandle?: string | null;
+  readonly targetHandle?: string | null;
+}
+
+export interface WorkflowCompositionUiLink {
+  readonly linkId: string;
+  readonly nodeIds: readonly string[];
+  readonly anchorId?: string;
+  readonly draggedId?: string;
+  readonly uiOnly?: boolean;
+}
+
+/** Backend-owned capsule display projection, including UI-only dock state. */
+export type WorkflowCompositionCapsuleProjection = WorkflowCapsuleSummary & {
+  readonly docked?: boolean;
+  readonly capsuleUiLinks?: readonly WorkflowCompositionUiLink[];
+};
+
+const workflowCompositionCache = new Map<string, WorkflowCompositionSnapshot>();
+
+export type WorkflowCompositionFetchOptions = {
+  /** Bypass the client read cache while retaining the versioned cache entry. */
+  forceRefresh?: boolean;
+};
+
+function compositionCacheKey(compositionId: string, graphVersion: number) {
+  return `${encodeURIComponent(compositionId)}:${Number(graphVersion)}`;
+}
+
+/**
+ * Fetch the canonical composition read model.  A caller may provide the
+ * graph version already present in the workflow snapshot to reuse an exact
+ * cached version; the first request learns the version from the response.
+ * Callers that observe runtime-only changes can set forceRefresh while the
+ * returned compositionVersion/stateVersion keeps the cache auditable.
+ */
+export async function fetchWorkflowComposition(
+  compositionId: string,
+  graphVersion?: number,
+  options: WorkflowCompositionFetchOptions = {},
+): Promise<WorkflowCompositionSnapshot> {
+  const normalizedId = String(compositionId || '').trim();
+  if (!normalizedId) throw new Error('compositionId is required');
+  if (!options.forceRefresh && Number.isFinite(graphVersion)) {
+    const cached = workflowCompositionCache.get(compositionCacheKey(normalizedId, Number(graphVersion)));
+    if (cached) return cached;
+  }
+  const data = await apiJson<WorkflowCompositionSnapshot>(
+    `${BASE}/compositions/${encodeURIComponent(normalizedId)}`,
+  );
+  const returnedId = String(data.compositionId || normalizedId);
+  const returnedVersion = Number(data.graphVersion);
+  if (Number.isFinite(returnedVersion)) {
+    workflowCompositionCache.set(compositionCacheKey(returnedId, returnedVersion), data);
+  }
+  return data;
+}
 
 export async function fetchNodes(): Promise<WorkflowRuntimeNode[]> {
   const data = await apiJson<{ nodes: WorkflowRuntimeNode[] }>(`${BASE}/nodes`);
@@ -668,6 +852,22 @@ export async function fetchSkillsHub(query = ''): Promise<WorkflowSkillsHubRespo
   params.set('scope', 'project');
   if (query.trim()) params.set('q', query.trim());
   return apiJson<WorkflowSkillsHubResponse>(`${BASE}/skills-hub?${params.toString()}`);
+}
+
+export async function fetchSkillsMarket(query = ''): Promise<WorkflowSkillsMarketResponse> {
+  const params = new URLSearchParams();
+  params.set('scope', 'project');
+  if (query.trim()) params.set('q', query.trim());
+  return apiJson<WorkflowSkillsMarketResponse>(`${BASE}/skills-market?${params.toString()}`);
+}
+
+export async function installSkillsMarketPack(
+  payload: WorkflowSkillsMarketInstallRequest,
+): Promise<WorkflowSkillsMarketInstallResponse> {
+  return apiJson<WorkflowSkillsMarketInstallResponse>(`${BASE}/skills-market/install`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function fetchMcpHub(query = ''): Promise<WorkflowMcpHubResponse> {

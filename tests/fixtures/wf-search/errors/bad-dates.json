@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "question": "Invalid dates must be rejected.",
+  "mode": "fact",
+  "depth": "quick",
+  "checkedAt": "2026-09-13T09:50:00.000Z",
+  "constraints": {},
+  "operations": [
+    { "id": "op-r1", "kind": "read", "tool": "webfetch", "url": "https://example.com/bad-date", "outcome": "success", "checkedAt": "yesterday-ish" }
+  ],
+  "sources": [
+    {
+      "id": "src-1",
+      "url": "https://example.com/bad-date",
+      "title": "Bad date doc",
+      "sourceType": "official",
+      "publishedAt": "not-a-date",
+      "retrievedAt": "2026-09-13T09:50:20.000Z",
+      "access": "full",
+      "excerpt": "E",
+      "locator": null,
+      "originGroup": null,
+      "operationIds": ["op-r1"]
+    }
+  ],
+  "claims": [
+    {
+      "id": "claim-1",
+      "text": "Fixture claim for invalid dates.",
+      "kind": "fact",
+      "importance": "minor",
+      "supportIds": ["src-1"],
+      "contradictionIds": [],
+      "dependsOnClaimIds": [],
+      "status": "supported",
+      "confidence": "medium",
+      "confidenceReason": "Fixture for date validation.",
+      "gaps": []
+    }
+  ],
+  "status": "complete",
+  "stopReason": "Fixture for date errors.",
+  "limitations": []
+}

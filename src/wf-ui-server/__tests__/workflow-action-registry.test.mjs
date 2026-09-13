@@ -75,7 +75,7 @@ const EXPECTED_ACTION_IDS = [
   'file.readZipEntries',
   'file.readZipEntry',
   'file.extractZipEntry',
-  // agent (11 adapter-backed + setModel/layout specials + agent.delete alias = 14)
+  // agent (11 adapter-backed + setModel/layout specials + agent.delete alias + 2 dispatch specials = 16)
   'agent.readOutput',
   'agent.sendInput',
   'agent.sendMessage',
@@ -90,6 +90,8 @@ const EXPECTED_ACTION_IDS = [
   'agent.readContext',
   'agent.setModel',
   'agent.layout',
+  'agent.dispatchProgress',
+  'agent.dispatchResult',
   // timer (11)
   'timer.read',
   'timer.fire',
@@ -192,7 +194,7 @@ test('registry covers every implemented action id in the audited inventory', () 
   const unexpected = ids.filter(id => !EXPECTED_ACTION_IDS.includes(id));
   assert.deepEqual(unexpected, [], `registry has unexpected actions: ${unexpected.join(', ')}`);
   assert.equal(ids.length, EXPECTED_ACTION_IDS.length);
-  assert.equal(ids.length, 85);
+  assert.equal(ids.length, 87);
 });
 
 // ── 3. Special-flag consistency ────────────────────────────────────────────

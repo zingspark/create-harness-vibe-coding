@@ -47,6 +47,7 @@ export function createOpencodeServerDriver(options = {}) {
     cwd,
     env,
     model,
+    effortVariant = '',
     title,
     providerSessionId = null,
     onEvent = () => {},
@@ -68,6 +69,44 @@ export function createOpencodeServerDriver(options = {}) {
   let sseReader = null;
   let permFlavor = null; // 'response' | 'reply' | null
   const startedToolCalls = new Set();
+
+  // OpenCode's model/variant selectors belong to the prompt request. They
+  // are not options of `opencode serve` (the CLI rejects them), even though
+  // the shared resolver emits them for PTY/run launches. Preserve the exact
+  // values while removing only these generic launch pairs.
+  function splitServeArgs() {
+    const serveArgs = [];
+    let argModel = '';
+    let argVariant = '';
+    const extra = Array.isArray(args) ? args.map(String) : [];
+    for (let i = 0; i < extra.length; i++) {
+      const arg = extra[i];
+      if (arg === '--model') {
+        argModel = String(extra[++i] || '');
+        continue;
+      }
+      if (arg.startsWith('--model=')) {
+        argModel = arg.slice('--model='.length);
+        continue;
+      }
+      if (arg === '--variant') {
+        argVariant = String(extra[++i] || '');
+        continue;
+      }
+      if (arg.startsWith('--variant=')) {
+        argVariant = arg.slice('--variant='.length);
+        continue;
+      }
+      serveArgs.push(arg);
+    }
+    return {
+      serveArgs,
+      model: String(model || argModel || ''),
+      effortVariant: String(effortVariant || argVariant || ''),
+    };
+  }
+
+  const serveLaunch = splitServeArgs();
 
   function emit(type, fields = {}, raw = null) {
     const envelope = { seq: ++seq, type, sessionId, ...fields, raw };
@@ -292,7 +331,7 @@ export function createOpencodeServerDriver(options = {}) {
     try {
       port = await getFreePort();
     } catch {}
-    child = _spawn(command, ['serve', '--port', String(port ?? 0), ...args], {
+    child = _spawn(command, ['serve', '--port', String(port ?? 0), ...serveLaunch.serveArgs], {
       cwd,
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -317,7 +356,8 @@ export function createOpencodeServerDriver(options = {}) {
 
   function buildPromptBody(text, meta) {
     const body = { parts: [{ type: 'text', text }] };
-    if (model) body.model = model;
+    if (serveLaunch.model) body.model = serveLaunch.model;
+    if (serveLaunch.effortVariant) body.variant = serveLaunch.effortVariant;
     if (meta !== undefined) body.meta = meta;
     return body;
   }

@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "question": "Non-http(s) URLs must be rejected.",
+  "mode": "fact",
+  "depth": "quick",
+  "checkedAt": "2026-09-13T09:55:00.000Z",
+  "constraints": {},
+  "operations": [
+    { "id": "op-r1", "kind": "read", "tool": "webfetch", "url": "ftp://files.example/report.txt", "outcome": "success", "checkedAt": "2026-09-13T09:55:10.000Z" }
+  ],
+  "sources": [
+    {
+      "id": "src-1",
+      "url": "ftp://files.example/report.txt",
+      "title": "FTP report",
+      "sourceType": "other",
+      "publishedAt": null,
+      "retrievedAt": "2026-09-13T09:55:20.000Z",
+      "access": "full",
+      "excerpt": "E",
+      "locator": null,
+      "originGroup": null,
+      "operationIds": ["op-r1"]
+    }
+  ],
+  "claims": [
+    {
+      "id": "claim-1",
+      "text": "Fixture claim with an ftp source URL.",
+      "kind": "fact",
+      "importance": "minor",
+      "supportIds": ["src-1"],
+      "contradictionIds": [],
+      "dependsOnClaimIds": [],
+      "status": "supported",
+      "confidence": "medium",
+      "confidenceReason": "Fixture for URL protocol validation.",
+      "gaps": []
+    }
+  ],
+  "status": "complete",
+  "stopReason": "Fixture for URL protocol errors.",
+  "limitations": []
+}

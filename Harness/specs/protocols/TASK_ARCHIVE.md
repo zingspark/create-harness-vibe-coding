@@ -6,7 +6,7 @@ preserving all evidence.
 ## Archive Location
 
 Active tasks stay in `Harness/tasks/<task-id>/`.
-Archived tasks move to `Harness/tasks/_archive/YYYY/<task-id>/`.
+Archived tasks move to `Harness/tasks/_archive/YYYY/MM/DD/<task-id>/`.
 
 ## What Is Never Archived
 
@@ -14,14 +14,15 @@ Archived tasks move to `Harness/tasks/_archive/YYYY/<task-id>/`.
 - `Harness/tasks/continuous/` - WF-AUTO/WF-AUTO-SPARK permanent state capsule, never moved unless
   explicitly allowed by WF-AUTO docs.
 - `Harness/tasks/_archive/` - the archive directory itself.
-- Active, blocked, in-progress, running, pending, or needs-user-decision tasks.
-- Tasks whose STATE.json status is `active`, `blocked`, `in_progress`,
-  `running`, `pending`, or `needs-user-decision`.
+- Active or blocked tasks.
+- Legacy `in_progress`, `running`, `pending`, and `needs-user-decision` values
+  are treated as open during migration.
 
 ## What May Be Archived
 
-Tasks whose STATE.json or reconciled phase is: `complete`, `verified`,
-`archived`, `abandoned`, `obsolete`, `done`, `closed`, or `closeout`.
+Tasks whose STATE.json or reconciled phase is `closed` may be archived.
+Legacy completed values such as `complete`, `verified`, `done`, and `closeout`
+remain readable and archiveable.
 
 `Harness/scripts/task-state.mjs` reads STATE.json `status`/`phase` first, then
 uses root/task PROGRESS phases only as reconciliation evidence. Missing or
@@ -31,11 +32,12 @@ machine state.
 
 ## Archive Process
 
-1. Verify the task is not active/blocked/running/pending.
-2. Ensure `Harness/tasks/_archive/YYYY/` exists.
+1. Verify the task is not active or blocked (including legacy open aliases).
+2. Ensure `Harness/tasks/_archive/YYYY/MM/DD/` exists.
 3. Move `Harness/tasks/<task-id>/` to
-   `Harness/tasks/_archive/YYYY/<task-id>/`.
-4. Update the moved STATE.json: `status` to `archived`, `phase` to `archived`.
+   `Harness/tasks/_archive/YYYY/MM/DD/<task-id>/`.
+4. Update the moved STATE.json: `status` to `archived`, `phase` to `archived`
+   as an archive-record marker; live task lifecycle writes use `closed`.
 5. Update `Harness/tasks/_archive/INDEX.md`.
 6. Rewrite `Harness/PROGRESS.md` Task Index from the remaining non-archived
    task capsules.
@@ -83,5 +85,6 @@ Compatibility entry: `Harness/scripts/archive-tasks.mjs` delegates to
 - Windows path safe. Use `path.resolve()` before moving.
 - Confirm target is within `Harness/tasks/` before any move.
 - Do NOT recursively delete.
-- Tasks with `needs-user-decision` status are never auto-archived.
+- Tasks with `blocked` status (including legacy `needs-user-decision` and
+  `failed`) are never auto-archived.
 - Missing or invalid STATE.json is never archived without reconciliation.

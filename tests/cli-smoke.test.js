@@ -1,4 +1,4 @@
-import test, { after } from 'node:test';
+import test, { after, afterEach, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -10,11 +10,27 @@ import { execFileSync, spawnSync } from 'node:child_process';
 const bin = path.resolve('bin/create-harness-vibe-coding.js');
 
 const tempRoots = [];
+const originalGlobalHome = process.env.HARNESS_GLOBAL_HOME;
+const originalHostGlobalHome = process.env.HARNESS_HOST_GLOBAL_HOME;
+let isolatedScopeRoot = null;
 function tmpdir() {
   const root = makeHarnessTempRoot('harness-cli-');
   tempRoots.push(root);
   return root;
 }
+beforeEach(() => {
+  isolatedScopeRoot = makeHarnessTempRoot('harness-cli-scope-');
+  process.env.HARNESS_GLOBAL_HOME = path.join(isolatedScopeRoot, 'global-runtime');
+  process.env.HARNESS_HOST_GLOBAL_HOME = path.join(isolatedScopeRoot, 'host-global');
+});
+afterEach(() => {
+  if (isolatedScopeRoot) fs.rmSync(isolatedScopeRoot, { recursive: true, force: true });
+  isolatedScopeRoot = null;
+  if (originalGlobalHome === undefined) delete process.env.HARNESS_GLOBAL_HOME;
+  else process.env.HARNESS_GLOBAL_HOME = originalGlobalHome;
+  if (originalHostGlobalHome === undefined) delete process.env.HARNESS_HOST_GLOBAL_HOME;
+  else process.env.HARNESS_HOST_GLOBAL_HOME = originalHostGlobalHome;
+});
 after(() => {
   for (const root of tempRoots) fs.rmSync(root, { recursive: true, force: true });
 });
@@ -424,7 +440,7 @@ test('--recommend records external recommendations without installing them', () 
   const root = tmpdir();
   const target = path.join(root, 'recommended');
 
-  execFileSync(process.execPath, [bin, 'recommended', target, '-y', '--recommend', 'superpowers,codegraph,grill-me'], { encoding: 'utf8' });
+  execFileSync(process.execPath, [bin, 'recommended', target, '-y', '--install-scope', 'project', '--recommend', 'superpowers,codegraph,grill-me'], { encoding: 'utf8' });
 
   const setup = fs.readFileSync(path.join(target, 'Harness', 'specs', 'guides', 'SETUP.md'), 'utf8');
   assert.match(setup, /Selected External Recommendations/);
@@ -445,7 +461,7 @@ test('--with copies optional skills and workflows while wf-browser stays built i
   const root = tmpdir();
   const target = path.join(root, 'web');
 
-  execFileSync(process.execPath, [bin, 'web', target, '-y', '--with', 'ts-react-frontend,ui-ux-review'], { encoding: 'utf8' });
+  execFileSync(process.execPath, [bin, 'web', target, '-y', '--install-scope', 'project', '--with', 'ts-react-frontend,ui-ux-review'], { encoding: 'utf8' });
 
   assert.ok(fs.existsSync(path.join(target, '.claude', 'skills', 'ts-react-frontend', 'SKILL.md')));
   assert.ok(fs.existsSync(path.join(target, '.agents', 'skills', 'ts-react-frontend', 'SKILL.md')));
@@ -476,7 +492,7 @@ test('--with equals form copies optional workflows', () => {
   const root = tmpdir();
   const target = path.join(root, 'web-equals');
 
-  execFileSync(process.execPath, [bin, 'web-equals', target, '-y', '--with=ui-ux-review'], { encoding: 'utf8' });
+  execFileSync(process.execPath, [bin, 'web-equals', target, '-y', '--install-scope', 'project', '--with=ui-ux-review'], { encoding: 'utf8' });
 
   assert.ok(fs.existsSync(path.join(target, 'Harness', 'workflows', 'ui-ux-review.md')));
   assert.equal(fs.existsSync(path.join(target, 'Harness', 'workflows', 'browser-e2e.md')), false);
@@ -486,7 +502,7 @@ test('--preset web-app expands optional skills', () => {
   const root = tmpdir();
   const target = path.join(root, 'web-preset');
 
-  execFileSync(process.execPath, [bin, 'web-preset', target, '-y', '--preset', 'web-app'], { encoding: 'utf8' });
+  execFileSync(process.execPath, [bin, 'web-preset', target, '-y', '--install-scope', 'project', '--preset', 'web-app'], { encoding: 'utf8' });
 
   assert.ok(fs.existsSync(path.join(target, '.claude', 'skills', 'ts-react-frontend', 'SKILL.md')));
   assert.ok(fs.existsSync(path.join(target, '.agents', 'skills', 'ts-react-frontend', 'SKILL.md')));
@@ -502,7 +518,7 @@ test('--preset equals form expands optional workflows', () => {
   const root = tmpdir();
   const target = path.join(root, 'web-preset-equals');
 
-  execFileSync(process.execPath, [bin, 'web-preset-equals', target, '-y', '--preset=web-app'], { encoding: 'utf8' });
+  execFileSync(process.execPath, [bin, 'web-preset-equals', target, '-y', '--install-scope', 'project', '--preset=web-app'], { encoding: 'utf8' });
 
   assert.ok(fs.existsSync(path.join(target, 'Harness', 'workflows', 'ts-react-frontend.md')));
   assert.ok(fs.existsSync(path.join(target, 'Harness', 'workflows', 'ui-ux-review.md')));
@@ -515,7 +531,7 @@ test('--without subtracts optional workflows after preset and with', () => {
 
   execFileSync(
     process.execPath,
-    [bin, 'trimmed-fullstack', target, '-y', '--preset', 'fullstack', '--with', 'ui-ux-review', '--without', 'python-backend,github-pr-review'],
+    [bin, 'trimmed-fullstack', target, '-y', '--install-scope', 'project', '--preset', 'fullstack', '--with', 'ui-ux-review', '--without', 'python-backend,github-pr-review'],
     { encoding: 'utf8' },
   );
 
@@ -537,7 +553,7 @@ test('retired --with browser-e2e is a warning no-op because wf-browser is built 
   const root = tmpdir();
   const target = path.join(root, 'retired-browser');
 
-  const output = execFileSync(process.execPath, [bin, 'retired-browser', target, '-y', '--with', 'browser-e2e'], { encoding: 'utf8' });
+  const output = execFileSync(process.execPath, [bin, 'retired-browser', target, '-y', '--install-scope', 'project', '--with', 'browser-e2e'], { encoding: 'utf8' });
 
   assert.match(output, /browser-e2e/);
   assert.match(output, /retired/);
@@ -551,7 +567,7 @@ test('--without equals form accepts known unselected optional ids as no-op', () 
   const root = tmpdir();
   const target = path.join(root, 'web-trimmed-equals');
 
-  execFileSync(process.execPath, [bin, 'web-trimmed-equals', target, '-y', '--preset=web-app', '--without=python-backend'], { encoding: 'utf8' });
+  execFileSync(process.execPath, [bin, 'web-trimmed-equals', target, '-y', '--install-scope', 'project', '--preset=web-app', '--without=python-backend'], { encoding: 'utf8' });
 
   assert.ok(fs.existsSync(path.join(target, '.claude', 'skills', 'ts-react-frontend', 'SKILL.md')));
   assert.ok(fs.existsSync(path.join(target, '.agents', 'skills', 'ts-react-frontend', 'SKILL.md')));
@@ -628,6 +644,84 @@ test('--json --dry-run reports global install plan without moving project task s
   assert.ok(data.warnings.some(warning => /Claude Code, Codex, and OpenCode host-global surfaces/.test(warning)));
 });
 
+test('AC-001 global bridge re-entry routes to the global updater without project recovery', () => {
+  const root = tmpdir();
+  const target = path.join(root, 'bridge-project');
+  const globalDir = path.join(root, 'global-runtime');
+  const hostGlobalDir = path.join(root, 'host-global');
+
+  execFileSync(process.execPath, [
+    bin,
+    'bridge-project',
+    target,
+    '-y',
+    '--install-scope',
+    'global',
+    '--global-dir',
+    globalDir,
+    '--host-global-dir',
+    hostGlobalDir,
+  ], { encoding: 'utf8' });
+
+  fs.writeFileSync(path.join(globalDir, 'Harness', 'scripts', 'wf-update-runner.mjs'), `
+console.log(JSON.stringify({ success: true, status: 'ok', projectRoot: process.cwd(), targets: [] }));
+`, 'utf8');
+
+  const output = execFileSync(process.execPath, [bin, 'bridge-project', target, '-y', '--json', '--dry-run'], {
+    encoding: 'utf8',
+    env: { ...process.env, HARNESS_GLOBAL_HOME: globalDir },
+  });
+  const data = JSON.parse(output.trim());
+
+  assert.equal(data.mode, 'update');
+  assert.match(data.agent.updateCommand, /wf-update-runner\.mjs/);
+  assert.equal(fs.existsSync(path.join(target, 'Harness', 'scripts', 'wf-update-check.mjs')), false);
+  assert.equal(data.recoveryNote, undefined);
+});
+
+test('AC-001 missing global bridge runtime never falls back to project recovery', () => {
+  const root = tmpdir();
+  const target = path.join(root, 'bridge-project');
+  const globalDir = path.join(root, 'global-runtime');
+
+  execFileSync(process.execPath, [
+    bin,
+    'bridge-project',
+    target,
+    '-y',
+    '--install-scope',
+    'global',
+    '--global-dir',
+    globalDir,
+  ], { encoding: 'utf8' });
+
+  fs.rmSync(path.join(globalDir, 'Harness', 'scripts', 'wf-update-check.mjs'));
+  const result = spawnSync(process.execPath, [bin, 'bridge-project', target, '-y', '--json', '--dry-run'], {
+    encoding: 'utf8',
+    env: { ...process.env, HARNESS_GLOBAL_HOME: globalDir },
+  });
+  const data = JSON.parse(result.stdout.trim());
+
+  assert.equal(result.status, 1);
+  assert.equal(data.mode, 'update');
+  assert.equal(data.recoveryNote, undefined);
+  assert.equal(data.agent.next[0].action, 'global-runtime-recovery');
+  assert.match(data.error, /global Harness bridge/i);
+  assert.equal(fs.existsSync(path.join(target, 'Harness', 'scripts', 'wf-update-check.mjs')), false);
+});
+
+test('AC-003 init propagates updater failures to the process exit code', () => {
+  const root = tmpdir();
+  const target = path.join(root, 'existing');
+  const checker = path.join(target, 'Harness', 'scripts', 'wf-update-check.mjs');
+  fs.mkdirSync(path.dirname(checker), { recursive: true });
+  fs.writeFileSync(checker, "console.log(JSON.stringify({ status: 'offline', message: 'offline' })); process.exitCode = 3;\n", 'utf8');
+
+  const result = spawnSync(process.execPath, [bin, 'init', target], { encoding: 'utf8' });
+
+  assert.equal(result.status, 3, `${result.stdout}\n${result.stderr}`);
+});
+
 test('--json --dry-run treats global runtime conflicts as agent attention files', () => {
   const root = tmpdir();
   const target = path.join(root, 'global-json-conflict');
@@ -687,7 +781,7 @@ test('generated optional project passes harness validator', () => {
   const root = tmpdir();
   const target = path.join(root, 'validated-web');
 
-  execFileSync(process.execPath, [bin, 'validated-web', target, '-y', '--with', 'ui-ux-review,ts-react-frontend'], { encoding: 'utf8' });
+  execFileSync(process.execPath, [bin, 'validated-web', target, '-y', '--install-scope', 'project', '--with', 'ui-ux-review,ts-react-frontend'], { encoding: 'utf8' });
   const output = execFileSync(process.execPath, ['Harness/scripts/validate-harness.mjs'], { cwd: target, encoding: 'utf8' });
 
   assert.match(output, /Harness validation passed/);
@@ -702,9 +796,12 @@ test('--json --dry-run outputs valid JSON plan without decorative text', () => {
   const data = JSON.parse(output.trim());
   assert.equal(data.success, true);
   assert.equal(data.dryRun, true);
+  assert.equal(data.installScope, 'global');
   assert.ok(Array.isArray(data.plan.create));
   assert.ok(data.plan.create.includes('CLAUDE.md'));
-  assert.ok(data.plan.create.includes('.agents/skills/wf/SKILL.md'));
+  assert.ok(data.plan.create.includes('Harness/tasks/INDEX.json'));
+  assert.ok(data.globalPlan.create.includes('Harness/README.md'));
+  assert.ok(data.hostPlans.some(plan => plan.host === 'codex' && plan.plan.create.includes('skills/wf/SKILL.md')));
   assert.equal(data.summary.created, data.plan.create.length);
   // Verify no decorative text leaked into stdout
   assert.doesNotMatch(output, /Generation complete/);
@@ -785,11 +882,13 @@ test('--json mode is non-interactive and uses defaults', () => {
   assert.equal(result.status, 0, output);
   const data = JSON.parse(output);
   assert.equal(data.success, true);
+  assert.equal(data.installScope, 'global');
   // Non-interactive mode used defaults — plan includes expected core files
   assert.ok(data.plan.create.includes('CLAUDE.md'));
   assert.ok(data.plan.create.includes('Harness/specs/guides/SETUP.md'));
-  assert.ok(data.plan.create.includes('Harness/MEMORY.md'));
-  assert.ok(data.plan.create.includes('.agents/skills/wf/SKILL.md'));
+  assert.ok(data.plan.create.includes('Harness/tasks/INDEX.json'));
+  assert.ok(data.globalPlan.create.includes('Harness/MEMORY.md'));
+  assert.ok(data.hostPlans.some(plan => plan.host === 'codex' && plan.plan.create.includes('skills/wf/SKILL.md')));
   // Verify no interactive text leaked
   assert.doesNotMatch(output, /Generation complete/);
   assert.doesNotMatch(output, /Confirm/);

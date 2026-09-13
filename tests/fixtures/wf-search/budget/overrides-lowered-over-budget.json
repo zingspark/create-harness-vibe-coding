@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "question": "Check release notes for library Y breaking changes.",
+  "mode": "verify",
+  "depth": "standard",
+  "checkedAt": "2026-09-13T12:30:00.000Z",
+  "constraints": {
+    "overrides": { "maxSearches": 1, "maxReads": 2 }
+  },
+  "operations": [
+    { "id": "op-s1", "kind": "search", "tool": "websearch", "query": "library y breaking changes", "outcome": "success", "checkedAt": "2026-09-13T12:30:10.000Z" },
+    { "id": "op-s2", "kind": "search", "tool": "websearch", "query": "library y migration guide", "outcome": "success", "checkedAt": "2026-09-13T12:30:20.000Z" }
+  ],
+  "sources": [
+    {
+      "id": "src-doc",
+      "url": "https://docs.example/library-y",
+      "title": "Library Y release notes",
+      "sourceType": "official",
+      "publishedAt": "2026-07-01T00:00:00.000Z",
+      "retrievedAt": "2026-09-13T12:30:30.000Z",
+      "access": "full",
+      "excerpt": "v3 removes the legacy config API.",
+      "locator": "#v3",
+      "originGroup": null,
+      "operationIds": ["op-s1"]
+    }
+  ],
+  "claims": [
+    {
+      "id": "claim-1",
+      "text": "Library Y v3 removes the legacy config API.",
+      "kind": "fact",
+      "importance": "minor",
+      "supportIds": ["src-doc"],
+      "contradictionIds": [],
+      "dependsOnClaimIds": [],
+      "status": "supported",
+      "confidence": "high",
+      "confidenceReason": "Official release notes.",
+      "gaps": []
+    }
+  ],
+  "status": "complete",
+  "stopReason": "Verified against official notes.",
+  "limitations": []
+}

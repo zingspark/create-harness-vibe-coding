@@ -238,6 +238,20 @@
         "codexSkill": true,
         "helpRow": true
       }
+    },
+    {
+      "id": "wf-search",
+      "classification": "direct",
+      "aliases": ["/wf-search", "$wf-search", "/skills wf-search"],
+      "entersWf": false,
+      "taskCapsulePolicy": "none",
+      "surfaces": {
+        "claudeCommand": true,
+        "opencodeCommand": true,
+        "claudeSkill": true,
+        "codexSkill": true,
+        "helpRow": true
+      }
     }
   ]
 }

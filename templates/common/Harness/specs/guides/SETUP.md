@@ -57,8 +57,9 @@ Before writing, identify the project state:
 
 Choose the install scope before scaffold writes:
 
-- `--install-scope project` (default): full Harness scaffold is project-local.
-- `--install-scope global`: write shared runtime assets to the selected global Harness directory and copy Claude Code, Codex, and OpenCode command/skill surfaces to host-global directories while keeping `Harness/tasks/`, `Harness/PROGRESS.md`, project memory, research, architecture, and project settings under the target project.
+- `--install-scope global` (default for a new or empty target): write shared runtime assets to the selected global Harness directory and copy Claude Code, Codex, and OpenCode command/skill surfaces to host-global directories while keeping `Harness/tasks/`, `Harness/PROGRESS.md`, project memory, research, architecture, and project settings under the target project.
+- `--install-scope project` (default for an existing non-empty target): keep the full Harness scaffold project-local for compatibility, self-contained installs, and offline/CI use.
+- An explicit `--install-scope` always wins. The CLI detects only whether the target is new/empty or existing/non-empty; it never silently changes an explicit choice.
 - Use `--global-dir <dir>` when the global runtime location must be explicit.
 - Use `--host-global-dir <dir>` only when the host-global copy base must be explicit; the installer creates `claude/`, `codex/`, and `opencode/` subdirectories under it.
 - Project settings in `Harness/settings.json` override global settings defaults. Existing user-authored files at config, command, skill, or agent paths are preserved or surfaced for review unless they carry a Harness ownership marker.

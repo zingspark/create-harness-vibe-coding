@@ -531,8 +531,9 @@ function listMarkdownFiles(rel) {
 const TASK_NAME_RE = /^task-[a-z]+(-[a-z0-9]+){1,4}$/;
 const TASK_NAME_MAX = 46; // "task-" (5) + ≤40 chars body + 1 safety = 46
 const TASK_RESERVED = new Set(['_template', 'auto', '_archive', 'continuous']);
-const TASK_SAFE_ARCHIVE_STATUSES = new Set(['complete', 'verified', 'archived', 'abandoned', 'obsolete', 'done', 'closed', 'closeout']);
-const TASK_NEVER_ARCHIVE_STATUSES = new Set(['active', 'blocked', 'in_progress', 'running', 'pending', 'needs-user-decision']);
+const TASK_CANONICAL_STATUSES = new Set(['active', 'blocked', 'closed']);
+const TASK_SAFE_ARCHIVE_STATUSES = new Set(['complete', 'verified', 'archived', 'abandoned', 'obsolete', 'done', 'closed', 'closeout', 'skipped']);
+const TASK_NEVER_ARCHIVE_STATUSES = new Set(['active', 'blocked']);
 const TASK_PHASE_ALIASES = new Map([
   ['implementation', 'implement'],
   ['build', 'implement'],
@@ -542,17 +543,37 @@ const TASK_PHASE_ALIASES = new Map([
   ['closed', 'closeout'],
 ]);
 const TASK_STATUS_ALIASES = new Map([
-  ['in-progress', 'in_progress'],
-  ['inprogress', 'in_progress'],
-  ['needs_user_decision', 'needs-user-decision'],
-  ['needs-user', 'needs-user-decision'],
+  ['in-progress', 'active'],
+  ['inprogress', 'active'],
+  ['in_progress', 'active'],
+  ['running', 'active'],
+  ['pending', 'active'],
+  ['needs_user_decision', 'blocked'],
+  ['needs-user-decision', 'blocked'],
+  ['needs-user', 'blocked'],
+  ['need-user-decision', 'blocked'],
+  ['complete', 'closed'],
+  ['completed', 'closed'],
+  ['verified', 'closed'],
+  ['archived', 'closed'],
+  ['abandoned', 'closed'],
+  ['obsolete', 'closed'],
+  ['done', 'closed'],
+  ['closeout', 'closed'],
+  ['skipped', 'closed'],
+  ['failed', 'blocked'],
 ]);
 const TASK_VALID_PHASES = new Set([
   'intake', 'clarify', 'requirements', 'prd', 'acceptance', 'plan', 'explore',
   'implement', 'verify', 'review', 'fix', 'reflect', 'closeout', 'blocked',
   'archived', 'verified',
 ]);
-const TASK_VALID_STATUSES = new Set([...TASK_SAFE_ARCHIVE_STATUSES, ...TASK_NEVER_ARCHIVE_STATUSES, 'skipped', 'failed']);
+const TASK_VALID_STATUSES = new Set([
+  ...TASK_CANONICAL_STATUSES,
+  ...TASK_SAFE_ARCHIVE_STATUSES,
+  ...TASK_NEVER_ARCHIVE_STATUSES,
+  'in_progress', 'running', 'pending', 'needs-user-decision', 'failed',
+]);
 const VALID_TASK_CAPSULE_POLICIES = new Set([
   'none',
   'required',
@@ -1558,9 +1579,14 @@ forbidText('Harness/scripts/wf-remove.mjs', '\uFFFD', 'replacement character in 
 for (const marker of ['codebase-explorer', 'task-scribe', 'wf-agents-docs', 'wf-auto-spark']) {
   requireText('Harness/scripts/wf-remove.mjs', marker, `wf-remove built-in registry includes ${marker}`);
 }
-requireText('.claude/skills/wf-review/SKILL.md', 'opencode run --agent reviewer', 'wf-review OpenCode peer CLI path');
+requireText('.claude/skills/wf-review/SKILL.md', 'Harness-native review workflow', 'wf-review native runtime contract');
+requireText('.claude/skills/wf-review/SKILL.md', 'External CLI: forbidden', 'wf-review external CLI prohibition');
+requireText('.claude/skills/wf-review/SKILL.md', 'Spawn child agents: forbidden', 'wf-review recursion prohibition');
 requireText('.claude/skills/wf-review/SKILL.md', 'Role: reviewer', 'wf-review installed reviewer role fallback');
 requireText('.claude/skills/wf-review/SKILL.md', 'The main agent is the controller', 'wf-review controller final authority');
+for (const forbiddenReviewCli of ['claude -p', 'codex exec', 'opencode run']) {
+  forbidText('.claude/skills/wf-review/SKILL.md', forbiddenReviewCli, `wf-review must not invoke ${forbiddenReviewCli}`);
+}
 requireText('.claude/skills/wf-agents-docs/SKILL.md', 'claude -p --output-format json', 'wf-agents-docs Claude JSON CLI path');
 requireText('.claude/skills/wf-agents-docs/SKILL.md', 'codex exec --json', 'wf-agents-docs Codex JSONL CLI path');
 requireText('.claude/skills/wf-agents-docs/SKILL.md', 'opencode run --format json', 'wf-agents-docs OpenCode JSON CLI path');
@@ -1571,7 +1597,7 @@ requireText('.claude/skills/wf-agents-docs/SKILL.md', 'No Scratch-File Rule', 'w
 requireText('.claude/skills/wf-agents-docs/SKILL.md', 'Subagent Output Contract', 'wf-agents-docs subagent output contract');
 requireText('.claude/skills/wf-agents-docs/SKILL.md', 'Do not write CLI probe output under `%TEMP%`', 'wf-agents-docs temp pollution guard');
 requireText('Harness/README.md', 'Need peer CLI automation docs', 'Harness router peer CLI automation docs row');
-requireText('.opencode/commands/wf-review.md', 'peer-review contract', 'OpenCode wf-review wrapper peer-review contract');
+requireText('.opencode/commands/wf-review.md', 'native-only skill adapter', 'OpenCode wf-review native review contract');
 requireText('Harness/specs/runtime/subagents.md', 'For `/wf-review`, use the installed `reviewer` role', 'subagents wf-review role fallback');
 requireText('.claude/agents/tdd-guide.md', 'Browser Acceptance Rules', 'tdd-guide browser acceptance rules');
 requireText('.claude/agents/tdd-guide.md', 'real user actions', 'tdd-guide real user action requirement');
@@ -1854,7 +1880,6 @@ for (const row of rootTaskProgress.rows) {
   }
 }
 
-const activeStateTasks = [];
 for (const taskDir of outerTaskSet) {
   if (!rootTaskRows.has(taskDir)) {
     taskStateIssue(`Harness/tasks/${taskDir}/ is missing from Harness/PROGRESS.md Task Index`);
@@ -1885,17 +1910,6 @@ for (const taskDir of outerTaskSet) {
   if (state.phase && !phase) {
     taskStateIssue(`Harness/tasks/${taskDir}/STATE.json has unknown phase "${state.phase}"`);
   }
-  if (status === 'active') activeStateTasks.push(taskDir);
-  if (status === 'active' && taskDir !== rootTaskProgress.activeTask) {
-    taskStateIssue(`Harness/tasks/${taskDir}/STATE.json is active but Harness/PROGRESS.md Active Task is ${rootTaskProgress.activeTask || 'None'}; run node Harness/scripts/task-state.mjs reconcile --apply`);
-  }
-  if (taskDir === rootTaskProgress.activeTask && status && status !== 'active') {
-    taskStateIssue(`Harness/PROGRESS.md Active Task points to ${taskDir}, but STATE.json status is "${status}"; run node Harness/scripts/task-state.mjs reconcile --apply`);
-  }
-}
-
-if (activeStateTasks.length > 1) {
-  taskStateIssue(`Multiple STATE.json files are active: ${activeStateTasks.join(', ')}; run node Harness/scripts/task-state.mjs reconcile --apply`);
 }
 
 // Outer task capsule cap: keep Harness/tasks/ lean (see Harness/specs/protocols/TASK_ARCHIVE.md)

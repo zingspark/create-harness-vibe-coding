@@ -43,6 +43,7 @@ export function createClaudeDriver(options = {}) {
     cwd,
     env,
     model,
+    effort = '',
     providerSessionId = null,
     onEvent = () => {},
     _spawn = nodeSpawn,
@@ -84,6 +85,9 @@ export function createClaudeDriver(options = {}) {
   function buildArgs() {
     const out = [...args];
     if (model && !out.includes('--model')) out.push('--model', model);
+    if (effort && !out.includes('--effort') && !out.some((arg) => String(arg).startsWith('--effort='))) {
+      out.push('--effort', effort);
+    }
     return out;
   }
 

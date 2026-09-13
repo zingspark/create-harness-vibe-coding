@@ -126,6 +126,17 @@ export type TaskOption = {
   taskId: string;
   status?: string;
   phase?: string | null;
+  mode?: string | null;
+  project?: string | null;
+  group?: string | null;
+  tags?: string[];
+  createdAt?: string | null;
+  startedAt?: string | null;
+  updatedAt?: string | null;
+  closedAt?: string | null;
+  wfManaged?: boolean;
+  resumeRequired?: boolean;
+  isActive?: boolean;
 };
 
 export type WorkflowNode = {
@@ -287,6 +298,15 @@ export type WorkflowCapsuleSummary = {
   protocolSteps: string[];
   sequenceLabel?: string;
   wdtState?: string;
+  /** UI-only magnetic dock projection; never a workflow relationship. */
+  docked?: boolean;
+  capsuleUiLinks?: readonly {
+    linkId: string;
+    nodeIds: readonly string[];
+    anchorId?: string;
+    draggedId?: string;
+    uiOnly?: boolean;
+  }[];
 };
 
 export type WorkflowComponentType = 'markdown' | 'excalidraw' | 'file' | 'display';
@@ -510,6 +530,10 @@ export type WorkflowSnapshot = {
   workflowId: string;
   taskId: string | null;
   mode: string | null;
+  wfManaged?: boolean;
+  resumeRequired?: boolean;
+  taskProject?: string | null;
+  taskTags?: string[];
   phase: string | null;
   gate: string | null;
   rootAgentId: string;

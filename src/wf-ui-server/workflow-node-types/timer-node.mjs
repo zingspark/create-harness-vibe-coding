@@ -2,6 +2,7 @@ import { EventNodeError, getEventNode, updateEventNode } from '../workflow-event
 import { computeMagneticTopology, loadWorkflowGraphMap } from '../a2a-store.mjs'
 import { listGoalNodes } from '../workflow-goal-node-store.mjs'
 import { recordBridgeMessage } from '../bridge-store.mjs'
+import { compositionIdFor, listCompositionTransitions, recordCompositionTransition } from '../composition-api.mjs'
 
 const TIMER_CONTROL_ACTIONS = new Set([
   'configure',
@@ -382,18 +383,16 @@ export function dispatchWakeup(nodeId, projectRoot, payload = {}) {
         ? [...(nodeGroup.directMagneticNeighbors || []), ...(nodeGroup.magneticReachableNodes || [])]
         : [],
     )
-    // F13/D-union: the wakeup recipient set is the magnetic-group members
-    // (capsuleDockLinks) UNION the ordinary graph-edge-connected members —
-    // graph edges between the timer and another node with an event/control
-    // relation ("连接/磁吸组内", spec §6.1). Both sets are deduped.
-    const edgeMemberIds = (Array.isArray(graph.edges) ? graph.edges : [])
+    // F13/D-union: legacy dock links remain a fallback, while explicit event
+    // links define the v0.1 wakeup recipient set. Control links never wake an
+    // Agent.
+    const eventEdgeMemberIds = (Array.isArray(graph.edges) ? graph.edges : [])
       .filter((edge) => {
         const from = String(edge?.from || edge?.source || '').trim()
         const to = String(edge?.to || edge?.target || '').trim()
         if (!from || !to) return false
         const relation = String(edge?.relation || 'wf-bridge').trim()
-        if (relation !== 'event' && relation !== 'control') return false
-        return from === timerNodeId || to === timerNodeId
+        return relation === 'event' && from === timerNodeId && String(edge?.direction || '') === 'source-to-target'
       })
       .flatMap((edge) => {
         const from = String(edge?.from || edge?.source || '').trim()
@@ -401,17 +400,78 @@ export function dispatchWakeup(nodeId, projectRoot, payload = {}) {
         const peer = from === timerNodeId ? to : from
         return peer ? [peer] : []
       })
-    for (const memberId of edgeMemberIds) groupIds.add(memberId)
+    // Event links are semantic recipients; union them with the legacy
+    // magnetic dock group so already-docked agents continue receiving a
+    // wakeup when another agent is attached through an ordinary event edge.
+    for (const memberId of eventEdgeMemberIds) groupIds.add(memberId)
     // Spec §6.1/6.2: the group holds at most one Goal node; when set, agents
     // must check the Goal state on wakeup.
     const goalNodeIds = new Set((listGoalNodes(projectRoot) || []).map(node => node.nodeId))
+    // Canonical graph goal edges are semantic links, unlike capsuleDockLinks
+    // (which are a UI topology fallback). Resolve a Goal connected directly to
+    // the Timer or to one of its event recipients as well, so wakeups do not
+    // lose their goal reference when no dock link exists.
+    const ordinaryGoalIds = []
+    for (const edge of (Array.isArray(graph.edges) ? graph.edges : [])) {
+      if (String(edge?.relation || '').trim() !== 'goal') continue
+      const from = String(edge?.from || edge?.source || '').trim()
+      const to = String(edge?.to || edge?.target || '').trim()
+      if (!from || !to) continue
+      const otherIsTimerOrRecipient = (from === timerNodeId && goalNodeIds.has(to))
+        || (to === timerNodeId && goalNodeIds.has(from))
+        || (eventEdgeMemberIds.includes(from) && goalNodeIds.has(to))
+        || (eventEdgeMemberIds.includes(to) && goalNodeIds.has(from))
+      if (!otherIsTimerOrRecipient) continue
+      if (goalNodeIds.has(from)) ordinaryGoalIds.push(from)
+      if (goalNodeIds.has(to)) ordinaryGoalIds.push(to)
+    }
+    for (const goalId of ordinaryGoalIds) {
+      envelope.goalNodeId = goalId
+      break
+    }
     for (const memberId of groupIds) {
+      if (envelope.goalNodeId) break
       if (goalNodeIds.has(memberId)) {
         envelope.goalNodeId = memberId
         break
       }
     }
-    const agents = (graph.nodes || []).filter(node => node?.sessionId && groupIds.has(node.nodeId || node.id))
+    const agents = (graph.nodes || []).filter(node => {
+      if (!node?.sessionId) return false
+      const nodeId = node.nodeId || node.id
+      return groupIds.has(nodeId)
+    })
+    const eventEdgeByAgent = new Map((graph.edges || [])
+      .filter(edge => String(edge?.relation || '').trim() === 'event' && String(edge?.from || edge?.source || '') === timerNodeId)
+      .map(edge => [String(edge.to || edge.target || ''), edge]))
+    const firstTarget = agents[0]?.nodeId || agents[0]?.id || null
+    const existingTransition = listCompositionTransitions(projectRoot)
+      .find(item => item.cause === 'timer.dispatchWakeup' && item.wakeupId === envelope.messageId)
+    const transition = existingTransition || recordCompositionTransition(projectRoot, {
+      compositionId: compositionIdFor(projectRoot),
+      from: 'fired',
+      to: agents.length ? 'queued' : 'failed',
+      cause: 'timer.dispatchWakeup',
+      eventId: String(payload.eventId || state.lastEvent?.id || envelope.messageId),
+      wakeupId: envelope.messageId,
+      timerNodeId,
+      targetNodeId: firstTarget,
+      edgeId: firstTarget ? (eventEdgeByAgent.get(firstTarget)?.id || null) : null,
+      graphVersion: Number(graph.version || 1),
+      stateRevision: Number(current.node.revision || state.revision || 0),
+      contextRefs: [],
+    })
+    Object.assign(envelope, {
+      transitionId: transition.transitionId,
+      compositionId: transition.compositionId,
+      from: transition.from,
+      to: transition.to,
+      cause: transition.cause,
+      eventId: transition.eventId,
+      wakeupId: transition.wakeupId,
+      graphVersion: transition.graphVersion,
+      stateRevision: transition.stateRevision,
+    })
     const deliveries = []
     for (const agent of agents) {
       const agentNodeId = agent.nodeId || agent.id
@@ -435,6 +495,23 @@ export function dispatchWakeup(nodeId, projectRoot, payload = {}) {
         })
       }
     }
+    const deliveredTransition = deliveries.length > 0
+      ? recordCompositionTransition(projectRoot, {
+        compositionId: compositionIdFor(projectRoot),
+        from: 'queued',
+        to: 'delivered',
+        cause: 'timer.wakeup.delivered',
+        eventId: transition.eventId,
+        wakeupId: transition.wakeupId,
+        timerNodeId,
+        targetNodeId: firstTarget,
+        edgeId: firstTarget ? (eventEdgeByAgent.get(firstTarget)?.id || null) : null,
+        graphVersion: transition.graphVersion,
+        stateRevision: transition.stateRevision,
+        deliveryCount: deliveries.length,
+        contextRefs: [],
+      })
+      : null
     return {
       ok: true,
       envelope,
@@ -442,6 +519,8 @@ export function dispatchWakeup(nodeId, projectRoot, payload = {}) {
       goalNodeId: envelope.goalNodeId,
       agentCount: agents.length,
       deliveries,
+      transition,
+      deliveredTransition,
     }
   } catch (error) {
     rethrow(error)

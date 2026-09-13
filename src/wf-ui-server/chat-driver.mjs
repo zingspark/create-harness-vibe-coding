@@ -145,6 +145,8 @@ export async function createChatDriver(runtime, opts = {}) {
     cwd: String(opts.cwd || ''),
     env: opts.env && typeof opts.env === 'object' ? opts.env : {},
     model: String(opts.model || ''),
+    effort: String(opts.effort || ''),
+    effortVariant: String(opts.effortVariant || ''),
     providerSessionId: opts.providerSessionId ? String(opts.providerSessionId) : '',
     onEvent: (event) => handleDriverEvent(sessionId, event),
   });

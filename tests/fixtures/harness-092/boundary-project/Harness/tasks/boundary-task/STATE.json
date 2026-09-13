@@ -1,0 +1,21 @@
+{
+  "taskId": "boundary-task",
+  "status": "active",
+  "phase": "verify",
+  "goal": "Exercise Harness boundary contracts",
+  "nextAction": "Run boundary checks",
+  "context": {
+    "intent": {
+      "original": "Keep boundary checks isolated",
+      "current": "Keep boundary checks isolated",
+      "changes": []
+    },
+    "constraints": ["Do not read outside project", "Keep context bounded"],
+    "facts": [],
+    "assumptions": [],
+    "decisions": [],
+    "evidence": [],
+    "attempts": [],
+    "handoff": { "summary": "Boundary fixture", "unresolved": [] }
+  }
+}

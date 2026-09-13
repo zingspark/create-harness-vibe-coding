@@ -7,10 +7,12 @@ import pc from 'picocolors';
 import { askConflictPolicy, askInstallScope, askOptionalSelections, askProjectName, askTargetDir } from './prompts.js';
 import { generate, getOptionalCatalog } from './generator.js';
 
-const UPDATE_SUCCESS_STATUSES = new Set(['up-to-date', 'update-available', 'partial-update']);
-const UPDATE_FAILURE_STATUSES = new Set(['error', 'offline', 'template-remote', 'downgrade-refused']);
+const UPDATE_SUCCESS_STATUSES = new Set(['up-to-date', 'update-available', 'partial-update', 'ok']);
+const UPDATE_FAILURE_STATUSES = new Set(['error', 'offline', 'template-remote', 'downgrade-refused', 'timeout', 'locked', 'failed']);
 const CANONICAL_UPDATE_SOURCE_BASE = 'https://raw.githubusercontent.com/LiWeny16/create-harness-vibe-coding/main/templates/common/';
 const DEFAULT_WF_UI_PORT = 56670;
+const DEFAULT_UPDATE_TIMEOUT_MS = 120000;
+const UPDATE_TIMEOUT_EXIT = 3;
 
 // ── CLI flags ──────────────────────────────────────────────
 const raw = process.argv.slice(2);
@@ -77,7 +79,7 @@ if (showHelp) {
   console.log('    --without <id,id>            Remove optional workflow skills selected by --preset or --with');
   console.log('    --recommend <id,id>          Record recommendation-only external capabilities');
   console.log('    --preset <name>              Add a built-in optional workflow preset');
-  console.log('    --install-scope <scope>      project or global (default: project)');
+  console.log('    --install-scope <scope>      project or global (new project default: global; existing target keeps project compatibility)');
   console.log('    --global-dir <dir>           Global Harness runtime directory for --install-scope global');
   console.log('    --host-global-dir <dir>      Base directory for Claude/Codex/OpenCode global copies');
   console.log('    --list-options               Print optional workflow skills and presets');
@@ -118,7 +120,10 @@ const generationOptions = {
   withoutOptions: parsed.flags.without || [],
   externalOptions: parsed.flags.recommend || [],
   preset: parsed.flags.preset,
-  installScope: parsed.flags.installScope || 'project',
+  // New repositories use the global runtime standard. Existing non-empty
+  // targets are switched back to project scope below unless the user chose a
+  // scope explicitly, preserving the historical installer behavior.
+  installScope: parsed.flags.installScope || 'global',
   globalDir: parsed.flags.globalDir,
   hostGlobalDir: parsed.flags.hostGlobalDir,
   json: Boolean(parsed.flags.json),
@@ -131,6 +136,9 @@ if (generationOptions.json) {
   const projectName = argName || DEFAULT_NAME;
   const targetDir = argDir || `./${projectName}`;
   const scan = scanTarget(targetDir);
+  if (parsed.flags.installScope === undefined) {
+    generationOptions.installScope = defaultInstallScope(scan);
+  }
   if (needsScaffoldRecovery(scan)) {
     const recovery = createScaffoldRecoveryResult({ projectName, targetDir, options: generationOptions, scan });
     printJsonResult(recovery);
@@ -138,8 +146,9 @@ if (generationOptions.json) {
   }
 
   if (scan.hasHarness) {
-    printJsonResult(createUpdateSwitchResult(scan, { json: true }));
-    process.exit(0);
+    const updateResult = createUpdateSwitchResult(scan, { json: true });
+    printJsonResult(updateResult, { exitOnFailure: false });
+    process.exit(updateResult.success ? 0 : (updateResult.exitCode || 1));
   }
   const result = generate({ projectName, targetDir, ...generationOptions });
   result.scan = createJsonScan(scan);
@@ -170,6 +179,9 @@ if (argName || skipPrompts) {
   projectName = argName || DEFAULT_NAME;
   targetDir = argDir || `./${projectName}`;
   const scan = scanTarget(targetDir);
+  if (parsed.flags.installScope === undefined) {
+    generationOptions.installScope = defaultInstallScope(scan);
+  }
 
   if (needsScaffoldRecovery(scan)) {
     process.exit(runScaffoldRecovery({ projectName, targetDir, options: generationOptions, scan }));
@@ -233,14 +245,15 @@ if (argName || skipPrompts) {
     console.log(pc.dim(`  Directory: ${targetDir} (default)`));
   }
 
+  const targetScan = scanTarget(targetDir);
   try {
-    generationOptions.installScope = await askInstallScope();
+    generationOptions.installScope = await askInstallScope(defaultInstallScope(targetScan));
   } catch {
-    generationOptions.installScope = 'project';
-    console.log(pc.dim('  Scope: project (default)'));
+    generationOptions.installScope = defaultInstallScope(targetScan);
+    console.log(pc.dim(`  Scope: ${generationOptions.installScope} (default)`));
   }
 
-  const scan = scanTarget(targetDir);
+  const scan = targetScan;
   printScan(scan);
 
   if (needsScaffoldRecovery(scan)) {
@@ -768,13 +781,9 @@ function runInit(args) {
   const scan = scanTarget(targetDir);
 
   if (scan.hasHarness) {
-    if (hasFlag(args, '--json')) {
-      console.log(JSON.stringify({ success: false, reason: 'harness-already-installed', targetDir }, null, 2));
-      process.exit(1);
-    }
+    if (hasFlag(args, '--json')) process.exit(runUpdateSwitch(scan, { json: true }));
     console.log(pc.yellow(`\nHarness already detected in ${targetDir}. Nothing to init.`));
-    runUpdateSwitch(scan, { json: false });
-    process.exit(0);
+    process.exit(runUpdateSwitch(scan, { json: false }));
   }
 
   const result = generate({
@@ -1046,17 +1055,70 @@ function printWarnings(result) {
   }
 }
 
-function printJsonResult(result) {
+function printJsonResult(result, { exitOnFailure = true } = {}) {
   // Remove `created` array from output — it is already in the plan, avoid duplication
   const { created, globalCreated, hostCreated, ...rest } = result;
   console.log(JSON.stringify(rest, null, 2));
-  if (!result.success) {
+  if (exitOnFailure && !result.success) {
     process.exit(1);
   }
 }
 
 function updateScriptPath(scan) {
   return path.join(scan.resolvedDir, 'Harness', 'scripts', 'wf-update-check.mjs');
+}
+
+function updateTimeoutMs() {
+  const raw = process.env.WF_UPDATE_TIMEOUT_MS;
+  const parsed = raw ? Number.parseInt(raw, 10) : DEFAULT_UPDATE_TIMEOUT_MS;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_UPDATE_TIMEOUT_MS;
+}
+
+function readInstallMetadata(scan) {
+  const file = path.join(scan.resolvedDir, 'Harness', '.harness-version');
+  try {
+    return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
+  } catch {
+    return null;
+  }
+}
+
+function sameResolvedPath(left, right) {
+  if (!left || !right) return false;
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function globalBridgeMetadata(scan) {
+  const metadata = readInstallMetadata(scan);
+  if (metadata?.installScope !== 'global' || !metadata.globalDir) return null;
+  const globalDir = path.resolve(metadata.globalDir);
+  if (sameResolvedPath(globalDir, scan.resolvedDir)) return null;
+  return { metadata, globalDir };
+}
+
+function globalBridgeUpdateTarget(scan) {
+  const bridge = globalBridgeMetadata(scan);
+  if (!bridge) return null;
+  const globalVersion = path.join(bridge.globalDir, 'Harness', '.harness-version');
+  const globalChecker = path.join(bridge.globalDir, 'Harness', 'scripts', 'wf-update-check.mjs');
+  const globalRunner = path.join(bridge.globalDir, 'Harness', 'scripts', 'wf-update-runner.mjs');
+  if (!fs.existsSync(globalVersion) || !fs.existsSync(globalChecker)) return null;
+  return {
+    root: bridge.globalDir,
+    scriptPath: fs.existsSync(globalRunner) ? globalRunner : globalChecker,
+    runner: fs.existsSync(globalRunner),
+    bridge: true,
+  };
+}
+
+function isGlobalBridge(scan) {
+  return Boolean(globalBridgeMetadata(scan));
+}
+
+function defaultInstallScope(scan) {
+  return scan.needsConflictPolicy && !isGlobalBridge(scan) ? 'project' : 'global';
 }
 
 function missingRecoveryReasons(scan) {
@@ -1066,7 +1128,9 @@ function missingRecoveryReasons(scan) {
 }
 
 function needsScaffoldRecovery(scan) {
-  return scan.hasHarness && missingRecoveryReasons(scan).length > 0;
+  // A global bridge intentionally omits local updater scripts. Do not turn it
+  // into a full project install just because its shared runtime is elsewhere.
+  return scan.hasHarness && !isGlobalBridge(scan) && missingRecoveryReasons(scan).length > 0;
 }
 
 function recoveryOptions(options) {
@@ -1101,20 +1165,20 @@ function runScaffoldRecovery({ projectName, targetDir, options, scan }) {
 function runUpdateSwitch(scan, { json }) {
   const updateResult = createUpdateSwitchResult(scan, { json });
   if (json) {
-    printJsonResult(updateResult);
-    return updateResult.success ? 0 : 1;
+    printJsonResult(updateResult, { exitOnFailure: false });
+    return updateResult.success ? 0 : (updateResult.exitCode || 1);
   }
 
   console.log('');
   console.log(pc.yellow('Existing Harness detected. Switching to wf-update check.'));
   console.log(pc.dim(`Directory   ${scan.resolvedDir}`));
-  console.log(pc.dim('Command     node Harness/scripts/wf-update-check.mjs'));
+  console.log(pc.dim(`Command     ${updateResult.command || 'node Harness/scripts/wf-update-check.mjs'}`));
   console.log(pc.dim(`Source      ${CANONICAL_UPDATE_SOURCE_BASE}`));
   console.log('');
 
   if (!updateResult.success && updateResult.error) {
     console.error(pc.red(updateResult.error));
-    return 1;
+    return updateResult.exitCode ?? 1;
   }
 
   if (updateResult.stdout) process.stdout.write(updateResult.stdout);
@@ -1136,35 +1200,64 @@ function getUpdateStatusError(update) {
 }
 
 function createUpdateSwitchResult(scan, { json }) {
-  const args = ['Harness/scripts/wf-update-check.mjs'];
+  const bridge = globalBridgeMetadata(scan);
+  const bridgeTarget = globalBridgeUpdateTarget(scan);
+  const target = bridgeTarget || (bridge ? {
+    root: bridge.globalDir,
+    scriptPath: path.join(bridge.globalDir, 'Harness', 'scripts', 'wf-update-check.mjs'),
+    runner: false,
+    bridge: true,
+  } : {
+    root: scan.resolvedDir,
+    scriptPath: updateScriptPath(scan),
+    runner: false,
+    bridge: false,
+  });
+  const args = target.runner
+    ? [target.scriptPath, '--project', scan.resolvedDir]
+    : [target.scriptPath];
   if (json) args.push('--json');
-
-  const scriptPath = path.join(scan.resolvedDir, 'Harness', 'scripts', 'wf-update-check.mjs');
-  const command = `node ${args.join(' ')}`;
+  const command = `node ${args.map(value => (/\s/.test(value) ? JSON.stringify(value) : value)).join(' ')}`;
   const base = {
     success: false,
     mode: 'update',
     scan: createJsonScan(scan),
     agent: {
       sourceOfTruth: 'Existing Harness detected; install automatically switched to the target update checker. Do not continue install writes.',
-      updateCommand: json
-        ? 'node Harness/scripts/wf-update-check.mjs --json'
-        : 'node Harness/scripts/wf-update-check.mjs',
+      updateCommand: command,
       updateSourceBase: CANONICAL_UPDATE_SOURCE_BASE,
       next: [
         {
           action: 'update',
-          command: json
-            ? 'node Harness/scripts/wf-update-check.mjs --json'
-            : 'node Harness/scripts/wf-update-check.mjs',
+          command,
           env: { WF_SOURCE_BASE: CANONICAL_UPDATE_SOURCE_BASE },
-          reason: 'Harness already exists, so updates must use the installed Harness update flow.',
+          reason: target.bridge
+            ? 'This project is a thin global bridge; the shared runtime is the single update source of truth.'
+            : 'Harness already exists, so updates must use the installed Harness update flow.',
         },
       ],
     },
   };
 
-  if (!fs.existsSync(scriptPath)) {
+  if (!fs.existsSync(target.scriptPath)) {
+    if (target.bridge) {
+      return {
+        ...base,
+        success: false,
+        exitCode: 1,
+        error: 'This project is a global Harness bridge, but its shared global runtime was not found. No project files were written. Reinstall or update the global create-harness-vibe-coding runtime, then retry.',
+        errors: ['global Harness runtime not found'],
+        agent: {
+          ...base.agent,
+          next: [{
+            action: 'global-runtime-recovery',
+            reason: 'The bridge must not be expanded into a project install when the shared runtime is unavailable.',
+            command: 'npm install --global create-harness-vibe-coding@latest',
+            note: 'The project bridge remains untouched; reinstalling the one global runtime restores the shared update source.',
+          }],
+        },
+      };
+    }
     return {
       ...base,
       success: false,
@@ -1184,8 +1277,10 @@ function createUpdateSwitchResult(scan, { json }) {
   }
 
   const result = spawnSync(process.execPath, args, {
-    cwd: scan.resolvedDir,
+    cwd: target.root,
     encoding: 'utf8',
+    timeout: updateTimeoutMs(),
+    killSignal: 'SIGTERM',
     env: {
       ...process.env,
       WF_SOURCE_BASE: CANONICAL_UPDATE_SOURCE_BASE,
@@ -1193,7 +1288,8 @@ function createUpdateSwitchResult(scan, { json }) {
   });
   const stdout = result.stdout || '';
   const stderr = result.stderr || '';
-  const status = result.status ?? 1;
+  const timedOut = result.error?.code === 'ETIMEDOUT';
+  const status = timedOut ? UPDATE_TIMEOUT_EXIT : (result.status ?? 1);
 
   let update = undefined;
   if (json && stdout.trim()) {
@@ -1203,9 +1299,16 @@ function createUpdateSwitchResult(scan, { json }) {
       update = { rawOutput: stdout };
     }
   }
+  if (timedOut && !update) {
+    update = {
+      status: 'timeout',
+      code: 'UPDATE_TIMEOUT',
+      message: `Update command exceeded the ${updateTimeoutMs()}ms deadline.`,
+    };
+  }
 
   const errors = [];
-  if (status !== 0) errors.push(`Update checker exited with status ${status}`);
+  if (status !== 0) errors.push(timedOut ? `Update checker exceeded the ${updateTimeoutMs()}ms deadline` : `Update checker exited with status ${status}`);
   if (json) {
     const statusError = getUpdateStatusError(update);
     if (statusError) errors.push(statusError);
@@ -1218,6 +1321,7 @@ function createUpdateSwitchResult(scan, { json }) {
     command,
     stdout,
     stderr,
+    ...(timedOut ? { timedOut: true, errorCode: 'UPDATE_TIMEOUT' } : {}),
     ...(json ? { update } : {}),
     ...(errors.length === 0 ? {} : { error: errors[0], errors }),
   };

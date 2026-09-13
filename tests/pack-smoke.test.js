@@ -42,6 +42,18 @@ test('npm pack includes core and optional templates', () => {
   assert.doesNotMatch(output, /\.agents\.bak|\\agents\.bak/);
 });
 
+test('AC-006 shipped package keeps wf-ui bounded and excludes local debug artifacts', () => {
+  const result = process.platform === 'win32'
+    ? spawnSync('npm pack --dry-run --json', { encoding: 'utf8', shell: true })
+    : spawnSync('npm', ['pack', '--dry-run', '--json'], { encoding: 'utf8' });
+  const output = `${result.stdout}\n${result.stderr}`;
+
+  assert.equal(result.status, 0, output);
+  const report = JSON.parse(result.stdout.trim())[0];
+  assert.ok(report.size <= 10 * 1024 * 1024, `packed package is ${report.size} bytes`);
+  assert.equal(report.files.some(file => file.path.startsWith('src/ui/debug-results-')), false);
+});
+
 test('test script runs unit and smoke tests', () => {
   const pkg = JSON.parse(fs.readFileSync(path.resolve('package.json'), 'utf8'));
 

@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "question": "Tracking parameters must be stripped while other query keys and fragments are preserved.",
+  "mode": "fact",
+  "depth": "quick",
+  "checkedAt": "2026-09-13T16:00:00.000Z",
+  "constraints": {},
+  "operations": [
+    { "id": "op-r1", "kind": "read", "tool": "webfetch", "url": "https://docs.example/page?utm_source=mail&utm_campaign=x&fbclid=zz&gclid=gg&msclkid=mm&ref_src=tw&keep=me&sort=asc#section", "outcome": "success", "checkedAt": "2026-09-13T16:00:10.000Z" }
+  ],
+  "sources": [
+    {
+      "id": "src-1",
+      "url": "https://docs.example/page?utm_source=mail&utm_campaign=x&fbclid=zz&gclid=gg&msclkid=mm&ref_src=tw&keep=me&sort=asc#section",
+      "title": "Query and fragment page",
+      "sourceType": "official",
+      "publishedAt": null,
+      "retrievedAt": "2026-09-13T16:00:20.000Z",
+      "access": "full",
+      "excerpt": "E",
+      "locator": "#section",
+      "originGroup": null,
+      "operationIds": ["op-r1"]
+    }
+  ],
+  "claims": [
+    {
+      "id": "claim-1",
+      "text": "The page documents query parameter handling.",
+      "kind": "fact",
+      "importance": "minor",
+      "supportIds": ["src-1"],
+      "contradictionIds": [],
+      "dependsOnClaimIds": [],
+      "status": "supported",
+      "confidence": "high",
+      "confidenceReason": "Fixture for URL normalization summary.",
+      "gaps": []
+    }
+  ],
+  "status": "complete",
+  "stopReason": "Fixture for URL normalization.",
+  "limitations": []
+}

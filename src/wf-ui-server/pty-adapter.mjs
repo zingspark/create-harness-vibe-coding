@@ -434,13 +434,15 @@ export function createOpencodeSessionIdCapture({
  */
 export function resolveSpawnArgs(runtime, {
   model,
+  effort,
+  effortVariant,
   launchPolicy,
   initialPrompt,
   agentSessionId,
   commandArgs = [],
 } = {}) {
   const args = [
-    ...resolveRuntimeLaunchArgs(runtime, { model, launchPolicy, initialPrompt }),
+    ...resolveRuntimeLaunchArgs(runtime, { model, effort, effortVariant, launchPolicy, initialPrompt }),
     ...commandArgs,
   ];
   if ((runtime === 'claude' || runtime === 'cc') && agentSessionId) {
@@ -465,7 +467,14 @@ export function resolveSpawnArgs(runtime, {
  * @param {string[]} [opts.commandArgs] - Extra args appended after runtime launch args
  * @param {string} [opts.agentSessionId] - Pre-assigned runtime session id for claude/cc (appended as --session-id)
  * @param {string} [opts.model] - Optional model override for runtimes that support it
+ * @param {string} [opts.effort] - Explicit reasoning effort forwarded to the runtime-native CLI
+ * @param {string} [opts.effortVariant] - Trusted OpenCode model variant selected by capability preflight
  * @param {string} [opts.initialPrompt] - Optional initial prompt passed through the runtime CLI
+ * @param {string} [opts.dispatchId] - Canonical dispatch identity for the worker
+ * @param {number} [opts.dispatchAttempt=0] - Canonical dispatch attempt
+ * @param {string} [opts.workerCapability] - Ephemeral service-issued worker capability
+ * @param {string} [opts.requestId] - Canonical dispatch request correlation id
+ * @param {string} [opts.replyTo] - Canonical dispatch reply correlation id
  * @param {number} [opts.cols=120] - Terminal columns
  * @param {number} [opts.rows=32] - Terminal rows
  * @param {function} opts.onData - Callback for PTY output data (chunk) => void
@@ -485,6 +494,8 @@ export async function spawnPty({
   commandArgs = [],
   agentSessionId,
   model = '',
+  effort = '',
+  effortVariant = '',
   initialPrompt = '',
   launchPolicy = null,
   controlPlaneUrl = '',
@@ -496,6 +507,11 @@ export async function spawnPty({
   graphContextPath = '',
   nodeHomePath = '',
   nodeInitPath = '',
+  dispatchId = '',
+  dispatchAttempt = 0,
+  workerCapability = '',
+  requestId = '',
+  replyTo = '',
   cols = 120,
   rows = 32,
   onData,
@@ -523,7 +539,7 @@ export async function spawnPty({
   const resolvedSessionId = sessionId || generateSessionId();
 
   const requestedExecutable = command || resolveRuntimeCommand(runtime);
-  const requestedArgs = resolveSpawnArgs(runtime, { model, launchPolicy, initialPrompt, agentSessionId, commandArgs });
+  const requestedArgs = resolveSpawnArgs(runtime, { model, effort, effortVariant, launchPolicy, initialPrompt, agentSessionId, commandArgs });
   const { executable, args: launchArgs } = resolvePtyCommand(requestedExecutable, requestedArgs);
 
   // Baseline snapshot of codex rollout files BEFORE spawn; the fs capture
@@ -564,6 +580,11 @@ export async function spawnPty({
         taskId,
         peerId,
         sessionId: resolvedSessionId,
+        dispatchId,
+        dispatchAttempt,
+        workerCapability,
+        requestId,
+        replyTo,
       }),
     });
   } catch (err) {

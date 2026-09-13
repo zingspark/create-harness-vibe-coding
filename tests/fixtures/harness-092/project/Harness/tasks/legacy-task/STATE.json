@@ -1,0 +1,7 @@
+{
+  "taskId": "legacy-task",
+  "status": "active",
+  "phase": "plan",
+  "goal": "Legacy state goal",
+  "nextAction": "Resume legacy task"
+}

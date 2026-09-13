@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const root = process.cwd();
 const harnessDir = path.join(root, 'Harness');
@@ -13,15 +14,15 @@ const command = args[0] && !args[0].startsWith('--') ? args[0] : 'help';
 const OUTER_TASK_CAP = 5;
 const RESERVED = new Set(['_template', '_archive', 'continuous']);
 const TASK_ID_RE = /^task-[a-z]+(-[a-z0-9]+){1,4}$/;
+const CANONICAL_STATUSES = new Set(['active', 'blocked', 'closed']);
 const NEVER_ARCHIVE_STATUSES = new Set([
   'active',
   'blocked',
-  'in_progress',
-  'running',
-  'pending',
-  'needs-user-decision',
 ]);
 const SAFE_ARCHIVE_STATUSES = new Set([
+  'closed',
+  // Legacy values are retained for archive compatibility. New writes use
+  // the canonical lifecycle statuses above.
   'complete',
   'verified',
   'archived',
@@ -32,8 +33,13 @@ const SAFE_ARCHIVE_STATUSES = new Set([
   'closeout',
 ]);
 const VALID_STATUSES = new Set([
+  ...CANONICAL_STATUSES,
   ...NEVER_ARCHIVE_STATUSES,
   ...SAFE_ARCHIVE_STATUSES,
+  'in_progress',
+  'running',
+  'pending',
+  'needs-user-decision',
   'skipped',
   'failed',
 ]);
@@ -64,15 +70,31 @@ const PHASE_ALIASES = new Map([
   ['closed', 'closeout'],
 ]);
 const STATUS_ALIASES = new Map([
-  ['in-progress', 'in_progress'],
-  ['inprogress', 'in_progress'],
-  ['needs_user_decision', 'needs-user-decision'],
-  ['needs-user', 'needs-user-decision'],
-  ['need-user-decision', 'needs-user-decision'],
-  ['close-out', 'closeout'],
+  // Legacy values intentionally normalize to the smaller lifecycle. The raw
+  // value remains available to archive/history code when needed.
+  ['in-progress', 'active'],
+  ['inprogress', 'active'],
+  ['in_progress', 'active'],
+  ['running', 'active'],
+  ['pending', 'active'],
+  ['needs_user_decision', 'blocked'],
+  ['needs-user-decision', 'blocked'],
+  ['needs-user', 'blocked'],
+  ['need-user-decision', 'blocked'],
+  ['complete', 'closed'],
+  ['completed', 'closed'],
+  ['verified', 'closed'],
+  ['archived', 'closed'],
+  ['abandoned', 'closed'],
+  ['obsolete', 'closed'],
+  ['done', 'closed'],
+  ['closeout', 'closed'],
+  ['skipped', 'closed'],
+  ['failed', 'blocked'],
+  ['close-out', 'closed'],
 ]);
-const OPEN_TASK_STATUSES = new Set(['active', 'blocked', 'in_progress', 'running', 'pending', 'needs-user-decision']);
-const VALUE_FLAGS = new Set(['--keep', '--mode', '--phase', '--status', '--task', '--text', '--title', '--note', '--context', '--group']);
+const OPEN_TASK_STATUSES = new Set(['active', 'blocked']);
+const VALUE_FLAGS = new Set(['--keep', '--mode', '--phase', '--status', '--task', '--text', '--title', '--note', '--context', '--group', '--project', '--tag', '--tags', '--keyword', '--since']);
 
 function hasFlag(name) {
   return args.includes(name);
@@ -114,7 +136,12 @@ function print(payload) {
     const renderTask = (task) => {
       const deps = task.dependsOn?.length ? `  dependsOn: [${task.dependsOn.join(', ')}]` : '';
       const blocks = task.blocks?.length ? `  blocks: [${task.blocks.join(', ')}]` : '';
-      console.log(`- ${task.id}: status=${task.status || '-'} phase=${task.phase || '-'}${deps}${blocks}`);
+      const project = task.project || task.group || 'default';
+      const tags = task.tags?.length ? ` tags=[${task.tags.join(', ')}]` : '';
+      const dates = task.createdAt || task.updatedAt
+        ? ` created=${String(task.createdAt || '-').slice(0, 10)} updated=${String(task.updatedAt || '-').slice(0, 10)}`
+        : '';
+      console.log(`- ${task.id}: project=${project} status=${task.status || '-'} phase=${task.phase || '-'}${tags}${dates}${deps}${blocks}`);
     };
     if (payload.groups) {
       console.log('');
@@ -170,6 +197,22 @@ function print(payload) {
       const suffix = r.path ? ` -> _archive/${r.path}` : '';
       console.log(`- ${r.action}: ${r.dir} (${r.status})${suffix}`);
     }
+  } else if (payload.command === 'open') {
+    console.log(`Open tasks: ${payload.taskCount}`);
+    for (const task of payload.tasks || []) {
+      const blocked = task.blockedByOpenDeps?.length ? ` blockedBy=[${task.blockedByOpenDeps.join(', ')}]` : '';
+      console.log(`- ${task.id}: project=${task.project || task.group || 'default'} status=${task.status || '-'} phase=${task.phase || '-'} updated=${String(task.updatedAt || '-').slice(0, 10)}${blocked}`);
+    }
+  } else if (payload.command === 'query') {
+    console.log(`Query: ${payload.keyword} (${payload.count} match${payload.count === 1 ? '' : 'es'})`);
+    for (const result of payload.results || []) {
+      console.log(`- ${result.id}: project=${result.project || result.group || 'default'} status=${result.status || '-'} path=${result.path}`);
+      for (const hit of result.hits || []) console.log(`  ${hit.file}:${hit.line} ${hit.snippet}`);
+    }
+  } else if (payload.command === 'index') {
+    console.log(`Task index rebuilt: ${payload.taskCount} task(s) in ${payload.projectCount} project(s).`);
+    console.log(`- JSON: ${payload.path}`);
+    console.log(`- Markdown: ${payload.markdownPath}`);
   } else {
     console.log(payload.message || '');
   }
@@ -190,11 +233,15 @@ function usage() {
     message: `Usage: node Harness/scripts/task-state.mjs <command> [options]
 
 Commands:
-  list [--json] [--group <tag>] [--by-group]   List task state with dependency/resume info.
-                                        --group filters by tag; --by-group prints sections.
+  list [--json] [--group <project>] [--project <project>] [--status <s>] [--by-group]
+                                        List task state with dependency/resume info.
+                                        --group is a legacy alias for --project.
+  index [--json]                         Rebuild Harness/tasks/INDEX.json and INDEX.md.
+  query <keyword> [--project <project>] [--status <s>] [--json]
+                                        Search task metadata and capsule notes.
   validate [--strict] [--json]          Validate state consistency (includes link checks).
   reconcile [--dry-run|--apply] [--json] Normalize STATE.json and root PROGRESS.md.
-  set-active <task-id> [--dry-run]       Set the single active task.
+  set-active <task-id> [--dry-run]       Set the focus/resume task (multiple open tasks are valid).
   transition <task-id> --status <s> --phase <p> [--dry-run]
   archive [--dry-run|--apply] [--keep n] [--task id] [--group <tag>] [--json]
                                         Archive eligible tasks to _archive/YYYY/MM/DD/.
@@ -207,11 +254,11 @@ Commands:
   history load <task-id> [--json]        Load one archived task's full record.
   history delete <task-id> [--dry-run|--apply] [--json]
                                         Delete an archived task (audit trail written).
-  record <task-id> [--create] [--text "description"] [--status <s>] [--mode <m>] [--group <tag>] [--dry-run|--apply] [--json]
+  record <task-id> [--create] [--text "description"] [--status <s>] [--phase <p>] [--mode <m>] [--group <project>] [--project <project>] [--tag <tag[,tag...]>] [--dry-run|--apply] [--json]
                                         Create or update a task record.
-                                        --group writes the optional group tag; missing/empty
-                                        renders as "default" at read time (no migration needed).
-  open [--json]                         List open (non-archived, active-status) tasks.
+                                        --project is canonical; --group remains compatible.
+  open [--project <project>] [--status <s>] [--json]
+                                        List all active/blocked tasks; multiple open tasks are valid.
 
 Archive defaults to dry-run and keeps ${OUTER_TASK_CAP} non-archived task capsules.`,
   }, 0);
@@ -230,6 +277,33 @@ function writeTextAtomic(file, text) {
 
 function writeJsonAtomic(file, value) {
   writeTextAtomic(file, JSON.stringify(value, null, 2) + '\n');
+}
+
+// Small parameterized helpers for adjacent runtime consumers.  The task-state
+// CLI remains the canonical owner of task paths and atomic writes; these
+// helpers deliberately do not normalize or maintain a second task store.
+function taskPathsForProject(projectRoot) {
+  const project = path.resolve(String(projectRoot || ''));
+  const harness = path.join(project, 'Harness');
+  const tasks = path.join(harness, 'tasks');
+  return { project, harnessDir: harness, tasksDir: tasks };
+}
+
+function readTaskState(projectRoot, taskId) {
+  const { tasksDir: projectTasksDir } = taskPathsForProject(projectRoot);
+  const file = path.join(projectTasksDir, String(taskId));
+  const statePath = path.join(file, 'STATE.json');
+  if (!fs.existsSync(statePath)) return { state: null, error: null, path: statePath };
+  try {
+    return { state: JSON.parse(fs.readFileSync(statePath, 'utf8')), error: null, path: statePath };
+  } catch (err) {
+    return { state: null, error: `invalid STATE.json: ${err.message}`, path: statePath };
+  }
+}
+
+function writeTaskStateAtomic(projectRoot, taskId, state) {
+  const { tasksDir: projectTasksDir } = taskPathsForProject(projectRoot);
+  writeJsonAtomic(path.join(projectTasksDir, String(taskId), 'STATE.json'), state);
 }
 
 function normalizeCandidate(value, validSet, aliasMap) {
@@ -288,12 +362,10 @@ function displayPhase(phase) {
 
 function statusFromPhase(phase, isActive) {
   const normalized = normalizePhase(phase);
-  if (isActive) return 'active';
-  if (normalized === 'verified' || normalized === 'closeout') return 'verified';
-  if (normalized === 'archived') return 'archived';
+  if (normalized === 'verified' || normalized === 'closeout' || normalized === 'archived') return 'closed';
   if (normalized === 'blocked') return 'blocked';
-  if (normalized) return 'in_progress';
-  return 'pending';
+  if (isActive) return 'active';
+  return 'active';
 }
 
 function defaultQueues() {
@@ -326,6 +398,10 @@ const VALID_MODES = new Set([
   'wf-review',
   'wf-browser',
 ]);
+// Durable task lifecycle is opt-in only for the two task-owning WF modes.
+// wf-auto/wf-auto-spark remain explicit workflow capabilities, but their
+// continuous capsule is not a normal task lifecycle and must not adopt tasks.
+const WF_MANAGED_MODES = new Set(['wf', 'wf-max']);
 
 function normalizeMode(value) {
   if (value === null || value === undefined) return '';
@@ -333,6 +409,21 @@ function normalizeMode(value) {
   if (!raw) return '';
   if (VALID_MODES.has(raw)) return raw;
   return '';
+}
+
+function isWfManagedMode(value) {
+  return WF_MANAGED_MODES.has(normalizeMode(value));
+}
+
+function lifecycleForState(state, fallbackStatus = 'active') {
+  const status = normalizeStatus(state?.status) || fallbackStatus;
+  const mode = normalizeMode(state?.mode) || 'direct';
+  const wfManaged = isWfManagedMode(mode);
+  return {
+    mode,
+    wfManaged,
+    resumeRequired: wfManaged && OPEN_TASK_STATUSES.has(status),
+  };
 }
 function normalizeQueues(state) {
   const source = state && typeof state.queues === 'object' && state.queues ? state.queues : state || {};
@@ -417,7 +508,9 @@ function collectTasks() {
     const statePhase = normalizePhase(state?.phase);
     const rootPhase = normalizePhase(rootRow?.phase);
     const progressPhase = normalizePhase(progressPhaseRaw);
-    const phase = rootPhase || progressPhase || statePhase;
+    // STATE.json is authoritative once present; root/task progress remains a
+    // compatibility fallback for legacy capsules without normalized state.
+    const phase = statePhase || progressPhase || rootPhase;
     const status = stateStatus || statusFromPhase(phase, id === rootProgress.activeTask);
     const stat = fs.statSync(path.join(tasksDir, id));
     return {
@@ -500,12 +593,8 @@ function validateState({ strict = false } = {}) {
     if (task.state.phase && !normalizePhase(task.state.phase)) {
       issue(`${task.id}: unknown phase "${task.state.phase}"`);
     }
-    if (normalizeStatus(task.state.status) === 'active' && task.id !== rootProgress.activeTask) {
-      issue(`${task.id}: STATE.json is active but root Active Task is ${rootProgress.activeTask || 'None'}`, true);
-    }
-    if (task.id === rootProgress.activeTask && normalizeStatus(task.state.status) && normalizeStatus(task.state.status) !== 'active') {
-      issue(`${task.id}: root Active Task points here but STATE.json status is "${normalizeStatus(task.state.status)}"`, true);
-    }
+    // Multiple tasks may be active. The root Active Task is retained as a
+    // focus/resume pointer for compatibility, not as a singleton invariant.
 
     const links = task.state.links || {};
     if (Array.isArray(links.dependsOn)) {
@@ -550,10 +639,18 @@ function validateState({ strict = false } = {}) {
     }
   }
 
-  const activeStateTasks = tasks.filter(task => normalizeStatus(task.state?.status) === 'active');
-  if (activeStateTasks.length > 1) {
-    issue(`Multiple STATE.json files are active: ${activeStateTasks.map(task => task.id).join(', ')}`, true);
+  const focusedTask = tasks.find(task => task.id === rootProgress.activeTask);
+  const openManagedTasks = tasks.filter(task => {
+    const status = normalizeStatus(task.state?.status) || task.status;
+    return isWfManagedMode(task.state?.mode) && OPEN_TASK_STATUSES.has(status);
+  });
+  if (focusedTask && openManagedTasks.length > 0) {
+    const focusedStatus = normalizeStatus(focusedTask.state?.status) || focusedTask.status;
+    if (!isWfManagedMode(focusedTask.state?.mode) && OPEN_TASK_STATUSES.has(focusedStatus)) {
+      issue(`Direct task "${focusedTask.id}" cannot be the active focus while an open WF-managed task exists`, true);
+    }
   }
+
   if (tasks.length > OUTER_TASK_CAP) {
     issue(`Harness/tasks/ has ${tasks.length} outer task capsules (cap ${OUTER_TASK_CAP}); remind the user to run $wf-task-archive when they want to archive completed tasks`);
   }
@@ -594,33 +691,41 @@ function safeTaskPath(...segments) {
 }
 
 function desiredPhaseForTask(task, activeTask) {
-  return task.rootPhase || task.progressPhase || task.statePhase || (task.id === activeTask ? 'implement' : 'intake');
+  return task.statePhase || task.progressPhase || task.rootPhase || (task.id === activeTask ? 'implement' : 'intake');
 }
 
 function desiredStatusForTask(task, activeTask, desiredPhase) {
-  if (task.id === activeTask) return 'active';
   const current = normalizeStatus(task.state?.status);
-  if (current && current !== 'active') return current;
-  return statusFromPhase(desiredPhase, false);
+  const phaseStatus = statusFromPhase(desiredPhase, false);
+  if (current === 'active' && phaseStatus === 'closed') return 'closed';
+  if (current) return current;
+  return statusFromPhase(desiredPhase, task.id === activeTask);
 }
 
 function defaultState(taskId, status, phase, now) {
   const runtime = defaultTaskRuntime();
+  const lifecycleStatus = normalizeStatus(status) || 'active';
   return {
     schemaVersion: 1,
     taskId,
-    status,
+    status: lifecycleStatus,
     mode: 'direct',
     defaultRuntime: runtime,
     defaultAgentRuntime: runtime,
     tier: 'none',
     phase,
     gate: null,
+    project: 'default',
+    tags: [],
+    createdAt: now,
+    startedAt: lifecycleStatus === 'active' ? now : null,
+    closedAt: lifecycleStatus === 'closed' ? now : null,
     updatedAt: now,
     activeQuestion: null,
     nextAction: 'Review task state.',
     acceptance: [],
     queues: defaultQueues(),
+    workItems: [],
     dispatchLedger: [],
     decisions: [],
     risks: [],
@@ -638,16 +743,30 @@ function normalizeState(task, activeTask, now) {
 
   state.schemaVersion = 1;
   state.taskId = task.id;
-  state.status = status;
+  // Keep an archived marker intact when an old repository has an archived
+  // capsule in the live directory; archive migration can still move it.
+  const rawStatus = String(task.state?.status || '').trim().toLowerCase();
+  state.status = rawStatus === 'archived' ? 'archived' : status;
   state.phase = phase;
   if (!state.mode) state.mode = 'direct';
   if (!state.defaultRuntime) state.defaultRuntime = defaultTaskRuntime();
   if (!state.defaultAgentRuntime) state.defaultAgentRuntime = state.defaultRuntime;
   if (!state.tier) state.tier = 'none';
   if (!Object.prototype.hasOwnProperty.call(state, 'gate')) state.gate = null;
+  state.tags = normalizeTags(state.tags);
+  if (!state.createdAt) state.createdAt = now;
+  if (!Object.prototype.hasOwnProperty.call(state, 'startedAt')) state.startedAt = state.status === 'active' ? now : null;
+  if (!Object.prototype.hasOwnProperty.call(state, 'closedAt')) state.closedAt = state.status === 'closed' || state.status === 'archived' ? now : null;
+  if (state.status === 'active' && !state.startedAt) state.startedAt = now;
+  if (state.status === 'closed' || state.status === 'archived') {
+    if (!state.closedAt) state.closedAt = now;
+  } else if (state.closedAt) {
+    state.closedAt = null;
+  }
   if (!Object.prototype.hasOwnProperty.call(state, 'activeQuestion')) state.activeQuestion = null;
   if (!state.nextAction) state.nextAction = task.rootRow?.goal || 'Review task state.';
   state.queues = normalizeQueues(state);
+  if (!Array.isArray(state.workItems)) state.workItems = [];
   if (!Array.isArray(state.dispatchLedger)) state.dispatchLedger = [];
   if (!Array.isArray(state.decisions)) state.decisions = [];
   if (!Array.isArray(state.risks)) state.risks = [];
@@ -724,11 +843,14 @@ function buildRows(tasks, activeTask, excluded = new Set()) {
   return ids.map(id => {
     const task = byId.get(id);
     const phase = normalizePhase(task.desiredState?.phase) || task.phase;
+    const desiredState = task.desiredState || task.state || {};
     return {
       id,
       goal: task.rootRow?.goal || task.state?.goal || task.state?.nextAction || taskTitle(id),
       phase: displayPhase(phase),
-      closed: task.rootRow?.closed || '-',
+      closed: desiredState.closedAt
+        ? String(desiredState.closedAt).slice(0, 10)
+        : task.rootRow?.closed || '-',
     };
   });
 }
@@ -756,12 +878,28 @@ function buildReconcilePlan({ activeOverride = undefined, transition = null } = 
       if (transition.status) {
         const status = normalizeStatus(transition.status);
         if (!status) errors.push(`${task.id}: unknown transition status "${transition.status}"`);
+        const currentStatus = normalizeStatus(task.state?.status) || task.status;
+        if (status && isWfManagedMode(task.state?.mode) && currentStatus === 'closed' && status !== 'closed') {
+          errors.push(`${task.id}: closed WF-managed task cannot be reopened; create a new task capsule`);
+        }
         if (status === 'active') activeTask = task.id;
         if (rootProgress.activeTask === task.id && SAFE_ARCHIVE_STATUSES.has(status)) activeTask = null;
       }
       if (transition.phase && !normalizePhase(transition.phase)) {
         errors.push(`${task.id}: unknown transition phase "${transition.phase}"`);
       }
+    }
+  }
+
+  const focusedTask = tasks.find(task => task.id === activeTask);
+  const openManagedTasks = tasks.filter(task => {
+    const status = normalizeStatus(task.state?.status) || task.status;
+    return isWfManagedMode(task.state?.mode) && OPEN_TASK_STATUSES.has(status);
+  });
+  if (focusedTask && openManagedTasks.length > 0) {
+    const focusedStatus = normalizeStatus(focusedTask.state?.status) || focusedTask.status;
+    if (!isWfManagedMode(focusedTask.state?.mode) && OPEN_TASK_STATUSES.has(focusedStatus)) {
+      errors.push(`Direct task "${activeTask}" cannot replace an open WF-managed focus; close the WF task or focus another WF task.`);
     }
   }
 
@@ -777,6 +915,9 @@ function buildReconcilePlan({ activeOverride = undefined, transition = null } = 
       if (transition.status) nextState.status = normalizeStatus(transition.status);
       if (transition.phase) nextState.phase = normalizePhase(transition.phase);
       if (transition.nextAction) nextState.nextAction = transition.nextAction;
+      if (nextState.status === 'active' && !nextState.startedAt) nextState.startedAt = now;
+      if (nextState.status === 'closed' && !nextState.closedAt) nextState.closedAt = now;
+      if (nextState.status !== 'closed' && nextState.status !== 'archived') nextState.closedAt = null;
       nextState.updatedAt = now;
       normalized = {
         state: nextState,
@@ -842,6 +983,31 @@ function applyOperations(operations) {
   }
 }
 
+function syncTaskViewsForState(taskId, state) {
+  const { rootProgress, tasks } = collectTasks();
+  const task = tasks.find(item => item.id === taskId);
+  if (!task) return;
+
+  task.desiredState = state;
+  let activeTask = rootProgress.activeTask;
+  const status = normalizeStatus(state.status);
+  if (activeTask === taskId && (status === 'closed' || status === 'archived')) activeTask = null;
+
+  const progressFile = path.join(tasksDir, taskId, 'PROGRESS.md');
+  const existingProgress = readText(progressFile);
+  const desiredProgress = renderTaskProgress(existingProgress, taskId, state);
+  if (desiredProgress !== existingProgress.replace(/\r\n/g, '\n')) {
+    writeTextAtomic(progressFile, desiredProgress);
+  }
+
+  const rows = buildRows(tasks, activeTask);
+  const desiredRoot = renderRootProgress(rootProgress.text, activeTask, rows);
+  if (desiredRoot !== rootProgress.text.replace(/\r\n/g, '\n')) {
+    writeTextAtomic(progressPath, desiredRoot);
+  }
+  writeTaskIndex();
+}
+
 function buildListGraph(expandedTasks) {
   const byId = new Map(expandedTasks.map(t => [t.id, t]));
   const graph = { roots: [], depEdges: [], blockEdges: [], orphanedDeps: [] };
@@ -875,24 +1041,150 @@ function buildListGraph(expandedTasks) {
 }
 
 function taskGroupFor(state) {
-  return String(state?.group || '').trim() || 'default';
+  const project = String(state?.project || '').trim();
+  const legacyGroup = String(state?.group || '').trim();
+  // A migrated legacy capsule may have project="default" while its
+  // meaningful grouping still lives in group. Preserve that grouping.
+  return (project && project !== 'default') || !legacyGroup
+    ? (project || legacyGroup || 'default')
+    : legacyGroup;
+}
+
+function taskProjectFor(state) {
+  return taskGroupFor(state);
+}
+
+function taskTagsFor(state) {
+  return Array.isArray(state?.tags)
+    ? state.tags.map(tag => String(tag).trim()).filter(Boolean)
+    : [];
+}
+
+function normalizeTags(value) {
+  return String(value || '')
+    .split(',')
+    .map(tag => tag.trim())
+    .filter(Boolean);
+}
+
+function taskIndexEntry(task) {
+  const state = task.state || {};
+  const links = state.links || {};
+  const status = normalizeStatus(state.status) || task.status || 'active';
+  const lifecycle = lifecycleForState(state, status);
+  return {
+    id: task.id,
+    project: taskProjectFor(state),
+    group: taskProjectFor(state),
+    title: task.rootRow?.goal || state.goal || state.nextAction || taskTitle(task.id),
+    status,
+    mode: lifecycle.mode,
+    wfManaged: lifecycle.wfManaged,
+    resumeRequired: lifecycle.resumeRequired,
+    phase: normalizePhase(state.phase) || task.phase || 'intake',
+    tags: taskTagsFor(state),
+    createdAt: state.createdAt || null,
+    startedAt: state.startedAt || null,
+    updatedAt: state.updatedAt || null,
+    closedAt: state.closedAt || null,
+    dependsOn: Array.isArray(links.dependsOn) ? links.dependsOn : [],
+    blocks: Array.isArray(links.blocks) ? links.blocks : [],
+    path: `Harness/tasks/${task.id}`,
+  };
+}
+
+function buildTaskIndexModel() {
+  const { rootProgress, tasks } = collectTasks();
+  const entries = tasks.map(taskIndexEntry).sort((a, b) => a.id.localeCompare(b.id));
+  const projects = {};
+  for (const task of entries) {
+    if (!projects[task.project]) projects[task.project] = [];
+    projects[task.project].push(task.id);
+  }
+  const activeEntry = entries.find(task => task.id === rootProgress.activeTask) || null;
+  const resumeTask = activeEntry?.resumeRequired
+    ? {
+        taskId: activeEntry.id,
+        mode: activeEntry.mode,
+        status: activeEntry.status,
+        project: activeEntry.project,
+      }
+    : null;
+  return {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    sourceOfTruth: 'Harness/tasks/*/STATE.json',
+    activeTask: rootProgress.activeTask,
+    resumeTask,
+    resumeRequired: Boolean(resumeTask),
+    projects,
+    tasks: entries,
+  };
+}
+
+function renderTaskIndexMd(model) {
+  const lines = [
+    '# Task Index (generated)',
+    '',
+    `Generated: ${model.generatedAt}`,
+    '',
+    'This file is derived from task STATE.json files. Do not edit it directly.',
+    '',
+    '| Task | Project | Status | Mode | Phase | Created | Updated |',
+    '|------|---------|--------|------|-------|---------|---------|',
+  ];
+  for (const task of model.tasks) {
+    lines.push(`| \`${task.id}\` | ${task.project} | ${task.status} | ${task.mode} | ${task.phase} | ${String(task.createdAt || '-').slice(0, 10)} | ${String(task.updatedAt || '-').slice(0, 10)} |`);
+  }
+  lines.push('', '## Projects', '');
+  for (const [project, ids] of Object.entries(model.projects).sort(([a], [b]) => a.localeCompare(b))) {
+    lines.push(`- **${project}**: ${ids.map(id => `\`${id}\``).join(', ')}`);
+  }
+  lines.push('');
+  return lines.join('\n');
+}
+
+function writeTaskIndex() {
+  const model = buildTaskIndexModel();
+  writeJsonAtomic(path.join(tasksDir, 'INDEX.json'), model);
+  writeTextAtomic(path.join(tasksDir, 'INDEX.md'), renderTaskIndexMd(model));
+  return model;
+}
+
+function taskSearchText(task) {
+  const files = ['PLAN.md', 'PROGRESS.md', 'PROBLEM.md', 'REFERENCES.md'];
+  const stateText = JSON.stringify(task.state || {});
+  const fileText = files.map(file => readText(path.join(task.path, file))).join('\n');
+  return `${task.id}\n${stateText}\n${fileText}`.toLowerCase();
 }
 
 function runList() {
   const { rootProgress, tasks } = collectTasks();
   const groupFilter = flagValue('--group');
+  const projectFilter = flagValue('--project') || groupFilter;
+  const statusFilter = flagValue('--status');
 
   const expandedTasks = tasks.map(task => {
     const state = task.state || {};
     const links = state.links || {};
     const status = normalizeStatus(state.status) || task.status;
+    const lifecycle = lifecycleForState(state, status);
     return {
       id: task.id,
       status,
+      mode: lifecycle.mode,
+      wfManaged: lifecycle.wfManaged,
+      resumeRequired: lifecycle.resumeRequired,
       phase: normalizePhase(state.phase) || task.phase,
       rootPhase: task.rootPhase,
       progressPhase: task.progressPhase,
-      group: taskGroupFor(state),
+      project: taskProjectFor(state),
+      group: taskProjectFor(state),
+      tags: taskTagsFor(state),
+      createdAt: state.createdAt || null,
+      startedAt: state.startedAt || null,
+      updatedAt: state.updatedAt || null,
+      closedAt: state.closedAt || null,
       dependsOn: Array.isArray(links.dependsOn) ? links.dependsOn : [],
       blocks: Array.isArray(links.blocks) ? links.blocks : [],
       statusDisplay: status || '-',
@@ -902,14 +1194,28 @@ function runList() {
     };
   });
 
-  const selectedTasks = groupFilter
-    ? expandedTasks.filter(task => task.group === groupFilter)
+  const normalizedStatusFilter = statusFilter ? normalizeStatus(statusFilter) : null;
+  if (statusFilter && !normalizedStatusFilter) {
+    finish({
+      ok: false,
+      command: 'list',
+      errors: [`Invalid status filter "${statusFilter}". Valid: active, blocked, closed (legacy aliases accepted)`],
+      warnings: [],
+      tasks: [],
+    }, 1);
+    return;
+  }
+  const selectedTasks = projectFilter
+    ? expandedTasks.filter(task => task.project === projectFilter)
     : expandedTasks;
+  const statusTasks = normalizedStatusFilter
+    ? selectedTasks.filter(task => task.status === normalizedStatusFilter)
+    : selectedTasks;
 
   let groups = null;
   if (hasFlag('--by-group')) {
     const byName = new Map();
-    for (const task of selectedTasks) {
+    for (const task of statusTasks) {
       if (!byName.has(task.group)) byName.set(task.group, []);
       byName.get(task.group).push(task);
     }
@@ -918,15 +1224,17 @@ function runList() {
       .sort((a, b) => (a.group === 'default' ? 1 : 0) - (b.group === 'default' ? 1 : 0) || a.group.localeCompare(b.group));
   }
 
-  const graph = buildListGraph(selectedTasks);
+  const graph = buildListGraph(statusTasks);
 
   const payload = {
     ok: true,
     command: 'list',
-    taskCount: selectedTasks.length,
+    taskCount: statusTasks.length,
     activeTask: rootProgress.activeTask,
     groupFilter: groupFilter || null,
-    tasks: selectedTasks,
+    projectFilter: projectFilter || null,
+    statusFilter: normalizedStatusFilter,
+    tasks: statusTasks,
     groups,
     graph: {
       roots: graph.roots.map(t => t.id),
@@ -940,6 +1248,77 @@ function runList() {
   finish(payload, 0);
 }
 
+function runIndex() {
+  const model = writeTaskIndex();
+  finish({
+    ok: true,
+    command: 'index',
+    path: 'Harness/tasks/INDEX.json',
+    markdownPath: 'Harness/tasks/INDEX.md',
+    generatedAt: model.generatedAt,
+    projectCount: Object.keys(model.projects).length,
+    taskCount: model.tasks.length,
+    projects: model.projects,
+    warnings: [],
+  }, 0);
+}
+
+function runQuery() {
+  const keyword = flagValue('--keyword') || findTaskIdArg(1);
+  const projectFilter = flagValue('--project') || flagValue('--group');
+  const statusFilter = flagValue('--status');
+  const normalizedStatusFilter = statusFilter ? normalizeStatus(statusFilter) : null;
+  if (statusFilter && !normalizedStatusFilter) {
+    finish({
+      ok: false,
+      command: 'query',
+      errors: [`Invalid status filter "${statusFilter}". Valid: active, blocked, closed (legacy aliases accepted)`],
+      warnings: [],
+      results: [],
+    }, 1);
+    return;
+  }
+  if (!keyword) {
+    finish({ ok: false, command: 'query', errors: ['query requires <keyword> or --keyword <text>'], warnings: [], results: [] }, 1);
+    return;
+  }
+
+  const needle = String(keyword).trim().toLowerCase();
+  const { tasks } = collectTasks();
+  const results = tasks
+    .filter(task => {
+      const status = normalizeStatus(task.state?.status) || task.status;
+      if (projectFilter && taskProjectFor(task.state) !== projectFilter) return false;
+      if (normalizedStatusFilter && status !== normalizedStatusFilter) return false;
+      return taskSearchText(task).includes(needle);
+    })
+    .map(task => {
+      const entry = taskIndexEntry(task);
+      const hits = [];
+      for (const file of ['PLAN.md', 'PROGRESS.md', 'PROBLEM.md', 'REFERENCES.md', 'STATE.json']) {
+        const content = readText(path.join(task.path, file));
+        const lines = content.split('\n');
+        for (let index = 0; index < lines.length; index += 1) {
+          if (lines[index].toLowerCase().includes(needle)) {
+            hits.push({ file, line: index + 1, snippet: lines[index].trim().slice(0, 160) });
+          }
+        }
+      }
+      return { ...entry, hits };
+    });
+
+  finish({
+    ok: true,
+    command: 'query',
+    keyword,
+    projectFilter: projectFilter || null,
+    statusFilter: normalizedStatusFilter,
+    count: results.length,
+    results,
+    warnings: [],
+  }, 0);
+}
+
 function runValidate() {
   const payload = validateState({ strict: hasFlag('--strict') });
   finish(payload, payload.ok ? 0 : 1);
@@ -950,6 +1329,7 @@ function runReconcile(overrides = {}) {
   if (overrides.commandLabel) plan.command = overrides.commandLabel;
   if (plan.ok && hasFlag('--apply')) {
     applyOperations(plan.operations);
+    writeTaskIndex();
     plan.dryRun = false;
   }
   finish(plan, plan.ok ? 0 : 1);
@@ -961,6 +1341,31 @@ function runSetActive() {
     ensureValidTaskId(taskId);
   } catch (err) {
     finish({ ok: false, command: 'set-active', errors: [err.message], warnings: [], operations: [] }, 1);
+  }
+  const { tasks } = collectTasks();
+  const task = tasks.find(item => item.id === taskId);
+  const status = normalizeStatus(task?.state?.status) || task?.status;
+  if (status === 'closed' || status === 'archived') {
+    finish({
+      ok: false,
+      command: 'set-active',
+      errors: [`Cannot set closed task "${taskId}" as active focus.`],
+      warnings: [],
+      operations: [],
+    }, 1);
+  }
+  const openManagedTasks = tasks.filter(item => {
+    const itemStatus = normalizeStatus(item.state?.status) || item.status;
+    return isWfManagedMode(item.state?.mode) && OPEN_TASK_STATUSES.has(itemStatus);
+  });
+  if (openManagedTasks.length > 0 && !isWfManagedMode(task?.state?.mode)) {
+    finish({
+      ok: false,
+      command: 'set-active',
+      errors: [`Direct task "${taskId}" cannot replace an open WF-managed focus; close the WF task or focus another WF task.`],
+      warnings: [],
+      operations: [],
+    }, 1);
   }
   const previousApply = hasFlag('--apply');
   if (!previousApply && !hasFlag('--dry-run')) args.push('--apply');
@@ -1335,6 +1740,7 @@ function runArchive() {
     const rows = buildRows(plan.tasks, plan.rootProgress.activeTask, plan.toArchiveIds);
     const desiredProgress = renderRootProgress(plan.rootProgress.text, plan.rootProgress.activeTask, rows);
     writeTextAtomic(progressPath, desiredProgress);
+    writeTaskIndex();
     plan.dryRun = false;
   }
 
@@ -1480,8 +1886,11 @@ function runRecord() {
 
   const text = flagValue('--text');
   const statusRaw = flagValue('--status');
+  const phaseRaw = flagValue('--phase');
   const modeRaw = flagValue('--mode');
   const groupRaw = flagValue('--group');
+  const projectRaw = flagValue('--project');
+  const tagsRaw = flagValue('--tag') || flagValue('--tags');
 
   if (!existing.state && isCreate) {
     const now = new Date().toISOString();
@@ -1492,21 +1901,31 @@ function runRecord() {
         return;
       }
     }
-    const status = statusRaw ? normalizeStatus(statusRaw) : 'pending';
-    const mode = modeRaw || 'direct';
-    const newState = defaultState(taskId, status, 'intake', now);
-    newState.mode = mode;
-    if (groupRaw) newState.group = String(groupRaw).trim();
-    if (text) newState.nextAction = text;
-  if (modeRaw) {
-    const normalizedMode = normalizeMode(modeRaw);
-    if (!normalizedMode) {
-      finish({ ok: false, command: 'record', errors: [`Invalid mode "${modeRaw}". Valid: ${[...VALID_MODES].join(', ')}`], warnings: [] }, 1);
+    if (phaseRaw && !normalizePhase(phaseRaw)) {
+      finish({ ok: false, command: 'record', errors: [`Invalid phase "${phaseRaw}". Valid: ${[...VALID_PHASES].join(', ')}`], warnings: [] }, 1);
       return;
     }
-    newState.mode = normalizedMode;
-  }
-
+    const status = statusRaw ? normalizeStatus(statusRaw) : 'active';
+    let mode = 'direct';
+    if (modeRaw) {
+      const normalizedMode = normalizeMode(modeRaw);
+      if (!normalizedMode) {
+        finish({ ok: false, command: 'record', errors: [`Invalid mode "${modeRaw}". Valid: ${[...VALID_MODES].join(', ')}`], warnings: [] }, 1);
+        return;
+      }
+      mode = normalizedMode;
+    }
+    const phase = phaseRaw ? normalizePhase(phaseRaw) : 'intake';
+    const newState = defaultState(taskId, status, phase, now);
+    newState.mode = mode;
+    const project = String(projectRaw || groupRaw || '').trim();
+    if (project) {
+      newState.project = project;
+      // Keep the legacy key populated for older Harness readers.
+      newState.group = project;
+    }
+    if (tagsRaw) newState.tags = normalizeTags(tagsRaw);
+    if (text) newState.nextAction = text;
     const templateState = readTemplateState();
     if (templateState) {
       if (Array.isArray(templateState.acceptance)) newState.acceptance = [...templateState.acceptance];
@@ -1538,8 +1957,12 @@ function runRecord() {
       const newRow = { id: taskId, goal: text || taskTitle(taskId), phase: displayPhase('intake'), closed: '-' };
       parsed.rows.push(newRow);
       const rows = parsed.rows.map(r => ({ id: r.id, goal: r.goal, phase: r.phase, closed: r.closed }));
-      const newRoot = renderRootProgress(rootText, parsed.activeTask, rows);
+      const newActiveTask = isWfManagedMode(newState.mode) && OPEN_TASK_STATUSES.has(newState.status)
+        ? taskId
+        : parsed.activeTask;
+      const newRoot = renderRootProgress(rootText, newActiveTask, rows);
       writeTextAtomic(progressPath, newRoot);
+      writeTaskIndex();
     }
 
     finish({
@@ -1557,9 +1980,36 @@ function runRecord() {
   if (existing.state) {
     const now = new Date().toISOString();
     const updated = { ...existing.state };
+    if (!updated.createdAt) updated.createdAt = updated.updatedAt || now;
+    if (!Object.prototype.hasOwnProperty.call(updated, 'startedAt')) updated.startedAt = null;
+    if (!Object.prototype.hasOwnProperty.call(updated, 'closedAt')) updated.closedAt = null;
     updated.updatedAt = now;
     if (!updated.defaultRuntime) updated.defaultRuntime = defaultTaskRuntime();
     if (!updated.defaultAgentRuntime) updated.defaultAgentRuntime = updated.defaultRuntime;
+    const currentMode = normalizeMode(updated.mode) || 'direct';
+    const currentStatus = normalizeStatus(updated.status) || 'active';
+    if (modeRaw) {
+      const normalizedMode = normalizeMode(modeRaw);
+      if (!normalizedMode) {
+        finish({ ok: false, command: 'record', errors: [`Invalid mode "${modeRaw}". Valid: ${[...VALID_MODES].join(', ')}`], warnings: [] }, 1);
+        return;
+      }
+      if (currentMode === 'direct' && isWfManagedMode(normalizedMode)) {
+        finish({ ok: false, command: 'record', errors: [`Direct task "${taskId}" cannot be promoted into WF-managed lifecycle; create a new task with --mode ${normalizedMode}.`], warnings: [] }, 1);
+        return;
+      }
+      if (isWfManagedMode(currentMode) && normalizedMode !== currentMode) {
+        finish({ ok: false, command: 'record', errors: [`WF-managed task "${taskId}" cannot downgrade or exit WF lifecycle; close it and create a new task.`], warnings: [] }, 1);
+        return;
+      }
+    }
+    if (isWfManagedMode(currentMode) && currentStatus === 'closed' && statusRaw) {
+      const requestedStatus = normalizeStatus(statusRaw);
+      if (requestedStatus && requestedStatus !== 'closed') {
+        finish({ ok: false, command: 'record', errors: [`Closed WF-managed task "${taskId}" cannot be reopened; create a new task capsule.`], warnings: [] }, 1);
+        return;
+      }
+    }
     if (statusRaw) {
       const ns = normalizeStatus(statusRaw);
       if (!ns) {
@@ -1568,19 +2018,30 @@ function runRecord() {
       }
       updated.status = ns;
     }
-    if (modeRaw) {
-      const normalizedMode = normalizeMode(modeRaw);
-      if (!normalizedMode) {
-        finish({ ok: false, command: 'record', errors: [`Invalid mode "${modeRaw}". Valid: ${[...VALID_MODES].join(', ')}`], warnings: [] }, 1);
+    if (phaseRaw) {
+      const normalizedPhase = normalizePhase(phaseRaw);
+      if (!normalizedPhase) {
+        finish({ ok: false, command: 'record', errors: [`Invalid phase "${phaseRaw}". Valid: ${[...VALID_PHASES].join(', ')}`], warnings: [] }, 1);
         return;
       }
-      updated.mode = normalizedMode;
+      updated.phase = normalizedPhase;
     }
-    if (groupRaw) updated.group = String(groupRaw).trim();
+    if (modeRaw) updated.mode = normalizeMode(modeRaw);
+    const project = String(projectRaw || groupRaw || '').trim();
+    if (project) {
+      updated.project = project;
+      updated.group = project;
+    }
+    if (tagsRaw) updated.tags = normalizeTags(tagsRaw);
     if (text) updated.nextAction = text;
+
+    if (updated.status === 'active' && !updated.startedAt) updated.startedAt = now;
+    if (updated.status === 'closed' && !updated.closedAt) updated.closedAt = now;
+    if (updated.status !== 'closed') updated.closedAt = null;
 
     if (actuallyApply) {
       writeJsonAtomic(existing.path, updated);
+      syncTaskViewsForState(taskId, updated);
     }
 
     finish({
@@ -1598,14 +2059,31 @@ function runRecord() {
 
 function runOpen() {
   const { rootProgress, tasks } = collectTasks();
+  const projectFilter = flagValue('--project') || flagValue('--group');
+  const statusFilter = flagValue('--status');
+  const normalizedStatusFilter = statusFilter ? normalizeStatus(statusFilter) : null;
+  if (statusFilter && !normalizedStatusFilter) {
+    finish({
+      ok: false,
+      command: 'open',
+      errors: [`Invalid status filter "${statusFilter}". Valid: active, blocked (legacy aliases accepted)`],
+      warnings: [],
+      tasks: [],
+    }, 1);
+    return;
+  }
 
   const openTasks = tasks.filter(task => {
     const status = normalizeStatus(task.state?.status) || task.status;
-    return OPEN_TASK_STATUSES.has(status);
+    if (!OPEN_TASK_STATUSES.has(status)) return false;
+    if (projectFilter && taskProjectFor(task.state) !== projectFilter) return false;
+    if (normalizedStatusFilter && status !== normalizedStatusFilter) return false;
+    return true;
   }).map(task => {
     const state = task.state || {};
     const links = state.links || {};
     const status = normalizeStatus(state.status) || task.status;
+    const lifecycle = lifecycleForState(state, status);
     const dependsOn = Array.isArray(links.dependsOn) ? links.dependsOn : [];
     const openDepTasks = dependsOn.filter(depId => {
       const depTask = tasks.find(t => t.id === depId);
@@ -1615,8 +2093,17 @@ function runOpen() {
     });
     return {
       id: task.id,
+      project: taskProjectFor(state),
+      group: taskProjectFor(state),
       status,
+      mode: lifecycle.mode,
+      wfManaged: lifecycle.wfManaged,
+      resumeRequired: lifecycle.resumeRequired,
       phase: normalizePhase(state.phase) || task.phase,
+      createdAt: state.createdAt || null,
+      startedAt: state.startedAt || null,
+      updatedAt: state.updatedAt || null,
+      closedAt: state.closedAt || null,
       dependsOn,
       blocks: Array.isArray(links.blocks) ? links.blocks : [],
       blockedByOpenDeps: openDepTasks,
@@ -1629,6 +2116,8 @@ function runOpen() {
   finish({
     ok: true,
     command: 'open',
+    projectFilter: projectFilter || null,
+    statusFilter: normalizedStatusFilter,
     taskCount: openTasks.length,
     tasks: openTasks,
     errors: [],
@@ -1840,32 +2329,48 @@ function runHistoryDelete() {
   }
 }
 
+export {
+  readTaskState,
+  writeTaskStateAtomic,
+  taskPathsForProject,
+  writeTextAtomic,
+  writeJsonAtomic,
+};
+
 // ---- dispatch ----
-if (command === 'help' || hasFlag('--help') || hasFlag('-h')) usage();
-if (command === 'list') runList();
-if (command === 'validate') runValidate();
-if (command === 'reconcile') runReconcile();
-if (command === 'set-active') runSetActive();
-if (command === 'transition') runTransition();
-if (command === 'archive') runArchive();
-if (command === 'record') runRecord();
-if (command === 'open') runOpen();
-if (command === 'history') {
-  const sub = args[1];
-  if (sub === 'list') runHistoryList();
-  else if (sub === 'search') runHistorySearch();
-  else if (sub === 'load') runHistoryLoad();
-  else if (sub === 'delete') runHistoryDelete();
-  else finish({
-    ok: false, command: 'history',
-    errors: [`Unknown history subcommand "${sub}". Try: list, search <kw>, load <id>, delete <id>`],
+// Keep imports side-effect free so runtime workers can reuse the canonical
+// reader/writer without accidentally running the task-state CLI.
+const isMain = process.argv[1]
+  && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+if (isMain) {
+  if (command === 'help' || hasFlag('--help') || hasFlag('-h')) usage();
+  if (command === 'list') runList();
+  if (command === 'index') runIndex();
+  if (command === 'query') runQuery();
+  if (command === 'validate') runValidate();
+  if (command === 'reconcile') runReconcile();
+  if (command === 'set-active') runSetActive();
+  if (command === 'transition') runTransition();
+  if (command === 'archive') runArchive();
+  if (command === 'record') runRecord();
+  if (command === 'open') runOpen();
+  if (command === 'history') {
+    const sub = args[1];
+    if (sub === 'list') runHistoryList();
+    else if (sub === 'search') runHistorySearch();
+    else if (sub === 'load') runHistoryLoad();
+    else if (sub === 'delete') runHistoryDelete();
+    else finish({
+      ok: false, command: 'history',
+      errors: [`Unknown history subcommand "${sub}". Try: list, search <kw>, load <id>, delete <id>`],
+      warnings: [],
+    }, 1);
+  }
+
+  finish({
+    ok: false,
+    command,
+    errors: [`Unknown command "${command}". Run node Harness/scripts/task-state.mjs --help.`],
     warnings: [],
   }, 1);
 }
-
-finish({
-  ok: false,
-  command,
-  errors: [`Unknown command "${command}". Run node Harness/scripts/task-state.mjs --help.`],
-  warnings: [],
-}, 1);

@@ -61,8 +61,14 @@ function linkedRoleLabel(role: WorkflowCapsuleRole, status: string | undefined, 
 export default function WorkflowCapsuleStrip({ capsule, selfRole, compact = false }: Props) {
   const roles = slotRolesFor(selfRole);
   const mode = capsule?.mode || 'standalone';
+  const docked = Boolean(capsule?.docked || capsule?.capsuleUiLinks?.length);
   return (
-    <div className="workflow-capsule-strip" data-capsule-mode={mode} data-compact={compact ? 'true' : 'false'}>
+    <div
+      className="workflow-capsule-strip"
+      data-capsule-mode={mode}
+      data-compact={compact ? 'true' : 'false'}
+      data-capsule-docked={docked ? 'true' : 'false'}
+    >
       <span className="workflow-capsule-state" title={capsule?.nextLabel || EMPTY_LABELS[roles[0]]}>
         <Link2 size={12} />
         <strong>{capsule?.stateLabel || 'Standalone'}</strong>

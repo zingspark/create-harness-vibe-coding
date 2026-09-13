@@ -1523,6 +1523,162 @@
    ]
   },
   {
+   "id": "agent.dispatchProgress",
+   "nodeType": "agent",
+   "category": "event",
+   "summary": "Report explicit progress for a dispatched runtime by dispatchId without interpreting PTY output.",
+   "params": [
+    {
+     "name": "dispatchId",
+     "type": "string",
+     "required": true,
+     "description": "Dispatch identifier returned by POST /api/sessions."
+    },
+    {
+     "name": "progress",
+     "type": "string",
+     "required": true,
+     "description": "Non-empty progress message."
+    },
+    {
+     "name": "taskId",
+     "type": "string",
+     "required": false,
+     "description": "Task identifier; defaults to HARNESS_PEER_TASK_ID in the CLI."
+    },
+    {
+     "name": "sessionId",
+     "type": "string",
+     "required": false,
+     "description": "Dispatch session identifier; defaults to HARNESS_PEER_SESSION_ID in the CLI."
+    },
+    {
+     "name": "requestId",
+     "type": "string",
+     "required": false,
+     "description": "Typed envelope correlation requestId."
+    },
+    {
+     "name": "replyTo",
+     "type": "string",
+     "required": false,
+     "description": "Typed envelope correlation replyTo."
+    }
+   ],
+   "actor": {
+    "spawnGate": null,
+    "edgeRequired": false,
+    "agentAuthored": true
+   },
+   "cli": {
+    "command": "dispatch-progress",
+    "flags": [
+     {
+      "flag": "--dispatch-id",
+      "value": "<dispatchId>"
+     },
+     {
+      "flag": "--text",
+      "value": "<progress>"
+     },
+     {
+      "flag": "--request-id",
+      "value": "<requestId>"
+     }
+    ]
+   },
+   "implementation": {
+    "special": true
+   },
+   "example": "wf-ui-control.mjs dispatch-progress --dispatch-id <dispatchId> --text \"Writing files\""
+  },
+  {
+   "id": "agent.dispatchResult",
+   "nodeType": "agent",
+   "category": "lifecycle",
+   "summary": "Deliver one explicit terminal result for a dispatched runtime by dispatchId.",
+   "params": [
+    {
+     "name": "dispatchId",
+     "type": "string",
+     "required": true,
+     "description": "Dispatch identifier returned by POST /api/sessions."
+    },
+    {
+     "name": "status",
+     "type": "string",
+     "required": true,
+     "description": "Terminal status: succeeded, failed, or cancelled."
+    },
+    {
+     "name": "result",
+     "type": "object",
+     "required": false,
+     "description": "Structured completion evidence; may be omitted when output is supplied."
+    },
+    {
+     "name": "output",
+     "type": "string",
+     "required": false,
+     "description": "Text completion evidence when no structured result is supplied."
+    },
+    {
+     "name": "taskId",
+     "type": "string",
+     "required": false,
+     "description": "Task identifier; defaults to HARNESS_PEER_TASK_ID in the CLI."
+    },
+    {
+     "name": "sessionId",
+     "type": "string",
+     "required": false,
+     "description": "Dispatch session identifier; defaults to HARNESS_PEER_SESSION_ID in the CLI."
+    },
+    {
+     "name": "requestId",
+     "type": "string",
+     "required": false,
+     "description": "Typed envelope correlation requestId."
+    },
+    {
+     "name": "replyTo",
+     "type": "string",
+     "required": false,
+     "description": "Typed envelope correlation replyTo."
+    }
+   ],
+   "actor": {
+    "spawnGate": null,
+    "edgeRequired": false,
+    "agentAuthored": true
+   },
+   "cli": {
+    "command": "dispatch-result",
+    "flags": [
+     {
+      "flag": "--dispatch-id",
+      "value": "<dispatchId>"
+     },
+     {
+      "flag": "--status",
+      "value": "<succeeded|failed|cancelled>"
+     },
+     {
+      "flag": "--result",
+      "value": "<json|string>"
+     },
+     {
+      "flag": "--reply-to",
+      "value": "<requestId>"
+     }
+    ]
+   },
+   "implementation": {
+    "special": true
+   },
+   "example": "wf-ui-control.mjs dispatch-result --dispatch-id <dispatchId> --status succeeded --result \"{\\\"files\\\":[\\\"out.txt\\\"]}\""
+  },
+  {
    "id": "agent.broadcastMessage",
    "nodeType": "agent",
    "category": "communication",

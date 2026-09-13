@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "question": "Claim dependency cycles must be rejected.",
+  "mode": "fact",
+  "depth": "quick",
+  "checkedAt": "2026-09-13T09:40:00.000Z",
+  "constraints": {},
+  "operations": [
+    { "id": "op-r1", "kind": "read", "tool": "webfetch", "url": "https://example.com/cycle", "outcome": "success", "checkedAt": "2026-09-13T09:40:10.000Z" }
+  ],
+  "sources": [
+    {
+      "id": "src-1",
+      "url": "https://example.com/cycle",
+      "title": "Cycle doc",
+      "sourceType": "official",
+      "publishedAt": null,
+      "retrievedAt": "2026-09-13T09:40:20.000Z",
+      "access": "full",
+      "excerpt": "E",
+      "locator": null,
+      "originGroup": null,
+      "operationIds": ["op-r1"]
+    }
+  ],
+  "claims": [
+    {
+      "id": "claim-a",
+      "text": "Claim A depends on claim B.",
+      "kind": "fact",
+      "importance": "minor",
+      "supportIds": ["src-1"],
+      "contradictionIds": [],
+      "dependsOnClaimIds": ["claim-b"],
+      "status": "supported",
+      "confidence": "medium",
+      "confidenceReason": "Fixture: cycle node A.",
+      "gaps": []
+    },
+    {
+      "id": "claim-b",
+      "text": "Claim B depends on claim A.",
+      "kind": "fact",
+      "importance": "minor",
+      "supportIds": ["src-1"],
+      "contradictionIds": [],
+      "dependsOnClaimIds": ["claim-a"],
+      "status": "supported",
+      "confidence": "medium",
+      "confidenceReason": "Fixture: cycle node B.",
+      "gaps": []
+    }
+  ],
+  "status": "complete",
+  "stopReason": "Fixture for dependency cycle errors.",
+  "limitations": []
+}

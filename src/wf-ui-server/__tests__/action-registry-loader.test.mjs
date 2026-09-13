@@ -40,11 +40,13 @@ function fixtureRegistry(summary) {
   };
 }
 
-test('L1: loads the real registry from the repo root with 85 actions', () => {
+test('L1: loads the real registry from the repo root with 87 actions including dispatch lifecycle actions', () => {
   clearActionRegistryCache();
   const registry = loadActionRegistry(REPO_ROOT);
   assert.equal(registry.schemaVersion, 1);
-  assert.equal(registry.actions.length, 85);
+  assert.equal(registry.actions.length, 87);
+  assert.ok(registry.actions.some(action => action.id === 'agent.dispatchProgress'));
+  assert.ok(registry.actions.some(action => action.id === 'agent.dispatchResult'));
   assert.ok(resolveRegistryPath(REPO_ROOT).endsWith(path.join('Harness', 'a2a', 'action-registry.json')));
 });
 

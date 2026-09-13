@@ -62,6 +62,7 @@ export function createCodexAppServerDriver(options = {}) {
     cwd,
     env,
     model,
+    effort = '',
     providerSessionId = null,
     onEvent,
     _spawn,
@@ -109,12 +110,31 @@ export function createCodexAppServerDriver(options = {}) {
   const buildArgs = () => {
     const out = ['app-server', '--listen', 'stdio://'];
     const extra = Array.isArray(args) ? args.map(String) : [];
-    out.push(...extra);
+    // The shared runtime resolver uses --model for PTY launches. Codex's
+    // app-server command takes its model through the documented config
+    // override instead, so strip only that generic pair here.
+    const appServerArgs = [];
+    for (let i = 0; i < extra.length; i++) {
+      const arg = extra[i];
+      if (arg === '--model') {
+        i += 1;
+        continue;
+      }
+      if (arg.startsWith('--model=')) continue;
+      appServerArgs.push(arg);
+    }
+    out.push(...appServerArgs);
+    if (effort && !appServerArgs.some(
+      (arg, i) => String(arg).startsWith('model_reasoning_effort=')
+        || (arg === '--config' && String(appServerArgs[i + 1] ?? '').startsWith('model_reasoning_effort=')),
+    )) {
+      out.push('--config', `model_reasoning_effort=${effort}`);
+    }
     if (model) {
-      const hasModel = extra.some(
+      const hasModel = appServerArgs.some(
         (a, i) =>
           String(a).startsWith('model=') ||
-          (a === '--config' && String(extra[i + 1] ?? '').startsWith('model=')),
+          (a === '--config' && String(appServerArgs[i + 1] ?? '').startsWith('model=')),
       );
       if (!hasModel) out.push('--config', `model=${model}`);
     }
@@ -326,11 +346,21 @@ export function createCodexAppServerDriver(options = {}) {
     const input = buildInput(entry);
     const wantsSteer = entry.meta?.steer === true || turnActive;
     const method = wantsSteer ? 'turn/steer' : 'turn/start';
+    if (method === 'turn/start') {
+      // Mark the turn active before writing the request. A provider may emit
+      // turn/completed synchronously with the JSON-RPC response; keeping the
+      // latch here prevents the response continuation from resurrecting a
+      // completed turn and routing the next message as a steer.
+      turnEndLatch = false;
+      turnActive = true;
+    }
     try {
-      await request(method, { threadId: currentThreadId, input });
-      if (method === 'turn/start') {
-        turnEndLatch = false;
-        turnActive = true;
+      const params = { threadId: currentThreadId, input };
+      // TurnStartParams has the native effort selector. TurnSteerParams does
+      // not; a steer inherits the active turn's effort by provider contract.
+      if (method === 'turn/start' && effort) params.effort = effort;
+      await request(method, params);
+      if (method === 'turn/start' && !turnEndLatch) {
         emit('turn_started', { threadId: currentThreadId });
       }
     } catch (err) {

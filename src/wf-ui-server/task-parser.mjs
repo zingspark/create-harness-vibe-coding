@@ -1,6 +1,28 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+export const OPEN_TASK_STATUSES = new Set(['active', 'blocked']);
+const STATUS_ALIASES = new Map([
+  ['in-progress', 'active'], ['inprogress', 'active'], ['in_progress', 'active'],
+  ['running', 'active'], ['pending', 'active'],
+  ['needs-user-decision', 'blocked'], ['needs_user_decision', 'blocked'], ['failed', 'blocked'],
+  ['complete', 'closed'], ['completed', 'closed'], ['verified', 'closed'], ['archived', 'closed'],
+  ['abandoned', 'closed'], ['obsolete', 'closed'], ['done', 'closed'], ['closeout', 'closed'],
+  ['skipped', 'closed'],
+]);
+// Only task-owning modes participate in durable WF lifecycle resume.
+export const WF_MANAGED_MODES = new Set(['wf', 'wf-max']);
+
+export function canonicalTaskStatus(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  return STATUS_ALIASES.get(raw) || (OPEN_TASK_STATUSES.has(raw) || raw === 'closed' ? raw : '');
+}
+
+function canonicalMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  return mode || 'direct';
+}
+
 function readState(taskDir) {
   const statePath = path.join(taskDir, 'STATE.json');
   if (!fs.existsSync(statePath)) return null;
@@ -68,6 +90,8 @@ export function parseTaskCapsule(taskDir) {
     throw new Error(`STATE.json at ${taskDir} is missing required field: schemaVersion`);
   }
   const links = state.links || { dependsOn: [], blocks: [], related: [] };
+  const mode = canonicalMode(state.mode);
+  const status = canonicalTaskStatus(state.status) || 'active';
   return {
     taskId: state.taskId || path.basename(taskDir),
     status: state.status || 'unknown',
@@ -75,8 +99,15 @@ export function parseTaskCapsule(taskDir) {
     gate: state.gate || null,
     tier: state.tier || null,
     mode: state.mode || null,
+    project: String(state.project || state.group || 'default').trim() || 'default',
     group: state.group || null,
+    tags: Array.isArray(state.tags) ? state.tags.map(tag => String(tag).trim()).filter(Boolean) : [],
+    createdAt: state.createdAt || null,
+    startedAt: state.startedAt || null,
     updatedAt: state.updatedAt || null,
+    closedAt: state.closedAt || null,
+    wfManaged: WF_MANAGED_MODES.has(mode),
+    resumeRequired: WF_MANAGED_MODES.has(mode) && OPEN_TASK_STATUSES.has(status),
     activeQuestion: state.activeQuestion || null,
     nextAction: state.nextAction || null,
     defaultRuntime: state.defaultRuntime || state.defaultAgentRuntime || state.agentRuntime || state.cliAgent || null,
@@ -107,6 +138,18 @@ export function parseTaskList(tasksRoot) {
     return db - da;
   });
   return capsules;
+}
+
+/** Read the single durable Harness focus pointer without selecting a task. */
+export function readActiveTaskId(projectRoot) {
+  try {
+    const content = fs.readFileSync(path.join(projectRoot, 'Harness', 'PROGRESS.md'), 'utf8');
+    const match = content.match(/## Active Task\s+^- ([^\r\n]+)/m);
+    const taskId = match?.[1]?.trim() || '';
+    return taskId && !/^none$/i.test(taskId) ? taskId : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Parse archived tasks from _archive/YYYY/task-name/ */

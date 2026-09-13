@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "question": "Find the default port for service X.",
+  "mode": "fact",
+  "depth": "quick",
+  "checkedAt": "2026-09-13T11:00:00.000Z",
+  "constraints": {},
+  "operations": [
+    { "id": "op-s1", "kind": "search", "tool": "websearch", "query": "service x default port", "outcome": "success", "checkedAt": "2026-09-13T11:00:10.000Z" },
+    { "id": "op-s2", "kind": "search", "tool": "websearch", "query": "service x port docs", "outcome": "failed", "checkedAt": "2026-09-13T11:00:20.000Z" }
+  ],
+  "sources": [
+    {
+      "id": "src-doc",
+      "url": "https://docs.example/service-x",
+      "title": "Service X documentation",
+      "sourceType": "official",
+      "publishedAt": null,
+      "retrievedAt": "2026-09-13T11:00:40.000Z",
+      "access": "full",
+      "excerpt": "Service X listens on port 8080 by default.",
+      "locator": "#ports",
+      "originGroup": null,
+      "operationIds": ["op-s1"]
+    }
+  ],
+  "claims": [
+    {
+      "id": "claim-1",
+      "text": "Service X defaults to port 8080.",
+      "kind": "fact",
+      "importance": "minor",
+      "supportIds": ["src-doc"],
+      "contradictionIds": [],
+      "dependsOnClaimIds": [],
+      "status": "supported",
+      "confidence": "high",
+      "confidenceReason": "Direct official documentation.",
+      "gaps": []
+    }
+  ],
+  "status": "complete",
+  "stopReason": "Direct evidence found.",
+  "limitations": []
+}

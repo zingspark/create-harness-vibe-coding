@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "question": "Deep-dive the failure signature of library Y.",
+  "mode": "troubleshoot",
+  "depth": "standard",
+  "checkedAt": "2026-09-13T12:00:00.000Z",
+  "constraints": {},
+  "operations": [
+    { "id": "op-s1", "kind": "search", "tool": "websearch", "query": "library y failure", "outcome": "success", "checkedAt": "2026-09-13T12:00:10.000Z" },
+    { "id": "op-r1", "kind": "read", "tool": "webfetch", "url": "https://example.com/page-1", "outcome": "success", "checkedAt": "2026-09-13T12:01:00.000Z" },
+    { "id": "op-r2", "kind": "read", "tool": "webfetch", "url": "https://example.com/page-2", "outcome": "success", "checkedAt": "2026-09-13T12:01:01.000Z" },
+    { "id": "op-r3", "kind": "read", "tool": "webfetch", "url": "https://example.com/page-3", "outcome": "success", "checkedAt": "2026-09-13T12:01:02.000Z" },
+    { "id": "op-r4", "kind": "read", "tool": "webfetch", "url": "https://example.com/page-4", "outcome": "success", "checkedAt": "2026-09-13T12:01:03.000Z" },
+    { "id": "op-r5", "kind": "read", "tool": "webfetch", "url": "https://example.com/page-5", "outcome": "success", "checkedAt": "2026-09-13T12:01:04.000Z" },
+    { "id": "op-r6", "kind": "read", "tool": "webfetch", "url": "https://example.com/page-6", "outcome": "success", "checkedAt": "2026-09-13T12:01:05.000Z" },
+    { "id": "op-r7", "kind": "read", "tool": "webfetch", "url": "https://example.com/page-7", "outcome": "success", "checkedAt": "2026-09-13T12:01:06.000Z" },
+    { "id": "op-r8", "kind": "read", "tool": "webfetch", "url": "https://example.com/page-8", "outcome": "success", "checkedAt": "2026-09-13T12:01:07.000Z" },
+    { "id": "op-r9", "kind": "read", "tool": "webfetch", "url": "https://example.com/page-9", "outcome": "success", "checkedAt": "2026-09-13T12:01:08.000Z" },
+    { "id": "op-r10", "kind": "read", "tool": "webfetch", "url": "https://example.com/page-10", "outcome": "success", "checkedAt": "2026-09-13T12:01:09.000Z" },
+    { "id": "op-r11", "kind": "read", "tool": "webfetch", "url": "https://example.com/page-11", "outcome": "success", "checkedAt": "2026-09-13T12:01:10.000Z" }
+  ],
+  "sources": [],
+  "claims": [],
+  "status": "incomplete",
+  "stopReason": "Out of read budget before conclusions.",
+  "limitations": ["Fixture: oversized read ledger for budget validation."]
+}

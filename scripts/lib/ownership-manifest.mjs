@@ -18,6 +18,7 @@ export const PRESERVE_PATTERNS = [
   'Harness/PROGRESS.md',
   'Harness/tasks/**',
   'Harness/memory/**',
+  'Harness/research/search/**',
   'Harness/research/PRD.md',
   'Harness/research/research-results.md',
   'Harness/architecture.md',

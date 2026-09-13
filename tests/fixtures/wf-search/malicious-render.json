@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "question": "Compare <script>alert(1)</script> and [click](javascript:alert(1)) and [phish](https://evil.example) handling.",
+  "mode": "compare",
+  "depth": "quick",
+  "checkedAt": "2026-09-13T15:00:00.000Z",
+  "constraints": {},
+  "operations": [
+    { "id": "op-r1", "kind": "read", "tool": "webfetch", "url": "https://evil.example/markdown-injection", "outcome": "success", "checkedAt": "2026-09-13T15:00:10.000Z" }
+  ],
+  "sources": [
+    {
+      "id": "src-evil",
+      "url": "https://evil.example/markdown-injection",
+      "title": "<script>alert(1)</script>",
+      "sourceType": "other",
+      "publishedAt": null,
+      "retrievedAt": "2026-09-13T15:00:10.000Z",
+      "access": "excerpt",
+      "excerpt": "Try [click](javascript:alert(1)) or visit [phish](https://evil.example) now. Also <img src=x onerror=alert(2)>.",
+      "locator": null,
+      "originGroup": null,
+      "operationIds": ["op-r1"]
+    }
+  ],
+  "claims": [
+    {
+      "id": "claim-1",
+      "text": "A page suggested [click](javascript:alert(1)) and [phish](https://evil.example) as links. The excerpt also contains <script>alert(3)</script>.",
+      "kind": "community-observation",
+      "importance": "minor",
+      "supportIds": ["src-evil"],
+      "contradictionIds": [],
+      "dependsOnClaimIds": [],
+      "status": "supported",
+      "confidence": "low",
+      "confidenceReason": "Fixture: hostile text must render as plain text.",
+      "gaps": []
+    }
+  ],
+  "status": "complete",
+  "stopReason": "Fixture for renderer escaping checks.",
+  "limitations": ["Fixture for render injection tests."]
+}

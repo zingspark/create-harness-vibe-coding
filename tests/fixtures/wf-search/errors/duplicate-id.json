@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "question": "Duplicate ids must be rejected.",
+  "mode": "fact",
+  "depth": "quick",
+  "checkedAt": "2026-09-13T09:20:00.000Z",
+  "constraints": {},
+  "operations": [
+    { "id": "op-s1", "kind": "search", "tool": "websearch", "query": "q", "outcome": "success", "checkedAt": "2026-09-13T09:20:10.000Z" }
+  ],
+  "sources": [
+    {
+      "id": "src-dup",
+      "url": "https://example.com/first",
+      "title": "First",
+      "sourceType": "official",
+      "publishedAt": null,
+      "retrievedAt": "2026-09-13T09:20:20.000Z",
+      "access": "full",
+      "excerpt": "E1",
+      "locator": null,
+      "originGroup": null,
+      "operationIds": ["op-s1"]
+    },
+    {
+      "id": "src-dup",
+      "url": "https://example.com/second",
+      "title": "Second",
+      "sourceType": "community",
+      "publishedAt": null,
+      "retrievedAt": "2026-09-13T09:20:21.000Z",
+      "access": "snippet",
+      "excerpt": "E2",
+      "locator": null,
+      "originGroup": null,
+      "operationIds": ["op-s1"]
+    }
+  ],
+  "claims": [
+    {
+      "id": "claim-1",
+      "text": "Fixture claim with duplicate source ids.",
+      "kind": "fact",
+      "importance": "minor",
+      "supportIds": ["src-dup"],
+      "contradictionIds": [],
+      "dependsOnClaimIds": [],
+      "status": "supported",
+      "confidence": "medium",
+      "confidenceReason": "Fixture for duplicate id rejection.",
+      "gaps": []
+    }
+  ],
+  "status": "complete",
+  "stopReason": "Fixture for duplicate id errors.",
+  "limitations": []
+}

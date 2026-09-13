@@ -637,4 +637,79 @@ test.describe('WF UI AC-004 skills-hub to canvas drag', () => {
     expect(network.skillGroupCreateRequests, 'create attempt recorded').toHaveLength(1);
     expect(network.pageErrors, 'page errors').toEqual([]);
   });
+
+  test('AC-008 delayed skill-group create shows a stable loading placeholder before replacing it with the real node', async ({ page }) => {
+    const { network, capabilities } = await installWorkflowFixture(page);
+    let requestStarted!: () => void;
+    let releaseResponse!: () => void;
+    const createStarted = new Promise<void>(resolve => { requestStarted = resolve; });
+    const responseGate = new Promise<void>(resolve => { releaseResponse = resolve; });
+
+    // Register after the fixture so this deterministic delayed driver owns the
+    // create request while preserving the fixture's GET node response shape.
+    await page.route(/\/api\/workflow\/nodes(?:\?.*)?$/, async route => {
+      if (route.request().method() === 'GET') {
+        return jsonResponse(route, {
+          ok: true,
+          nodes: [...capabilities.values()].map(state => capabilityRuntimeNode(state)),
+        });
+      }
+      const payload = route.request().postDataJSON() as JsonRecord;
+      if (payload?.type !== 'skill-group') return jsonResponse(route, { ok: true }, 200);
+      requestStarted();
+      const nodeId = `capability-skill-group-delayed-${network.skillGroupCreateRequests.length + 1}`;
+      const skills = Array.isArray(payload.skills) ? payload.skills.map((skill: JsonRecord) => ({
+        id: String(skill.id || ''),
+        name: String(skill.name || skill.id || ''),
+        title: String(skill.title || skill.name || skill.id || ''),
+        description: String(skill.description || ''),
+        source: String(skill.source || 'skills-hub'),
+        state: String(skill.state || 'indexed'),
+      })) : [];
+      const state = capabilityStateFixture(
+        nodeId,
+        String(payload.title || 'Skill Group'),
+        skills,
+        payload.sourceGroup || { id: `drop:${payload.title}`, label: payload.title, kind: 'local' },
+        payload.position || { x: 300, y: 300 },
+      );
+      capabilities.set(nodeId, state);
+      network.skillGroupCreateRequests.push(payload);
+      await responseGate;
+      return jsonResponse(route, {
+        ok: true,
+        node: capabilityRuntimeNode(state),
+        state,
+        revision: state.revision,
+      }, 201);
+    });
+
+    await openWorkflow(page);
+    await openSkillsHub(page);
+    await composeDraft(page, [alphaSkillId, betaSkillId]);
+    await simulateChipDrag(page, { skillIds: [alphaSkillId, betaSkillId], label: draftLabel });
+    await createStarted;
+
+    const placeholder = page.getByTestId('workflow-node-loading-placeholder');
+    await expect(placeholder).toBeVisible();
+    // NodeLoadingPlaceholder enters with a 0.3s spring; sample its rendered
+    // shell after that animation so this compares stable geometry rather than
+    // the initial scale transform.
+    await page.waitForTimeout(400);
+    const placeholderBox = await placeholder.boundingBox();
+    expect(placeholderBox).not.toBeNull();
+    expect(placeholderBox!.width).toBeGreaterThan(0);
+    expect(placeholderBox!.height).toBeGreaterThan(0);
+    await expect(placeholder.locator('.workflow-toast-orb')).toBeVisible();
+
+    releaseResponse();
+    const node = page.locator('[data-testid="workflow-capability-node"][data-capability-type="skill-group"][data-skill-count="2"]');
+    await expect(node).toBeVisible();
+    await expect(placeholder).toHaveCount(0);
+    const nodeBox = await node.boundingBox();
+    expect(nodeBox).not.toBeNull();
+    expect(Math.abs(nodeBox!.width - placeholderBox!.width)).toBeLessThanOrEqual(3);
+    expect(Math.abs(nodeBox!.height - placeholderBox!.height)).toBeLessThanOrEqual(3);
+    expect(network.pageErrors, 'page errors').toEqual([]);
+  });
 });

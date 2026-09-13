@@ -1,0 +1,66 @@
+{
+  "taskId": "task-context-fixture",
+  "status": "active",
+  "phase": "plan",
+  "goal": "Build a durable context contract",
+  "nextAction": "Review the context pack",
+  "context": {
+    "intent": {
+      "original": "Preserve the original context intent",
+      "current": "Preserve the current context intent",
+      "changes": [
+        {
+          "summary": "Added bounded packing",
+          "reason": "Avoid unbounded transcript injection",
+          "source": "acceptance"
+        }
+      ]
+    },
+    "constraints": ["Do not read full logs", "Keep the pack bounded"],
+    "facts": [
+      {
+        "id": "fact-fixture",
+        "text": "The task state is the canonical task record",
+        "source": "Harness/specs/runtime/context-loading.md",
+        "status": "verified"
+      }
+    ],
+    "assumptions": [
+      {
+        "id": "assumption-fixture",
+        "text": "Evidence paths can be referenced without reading their bodies",
+        "status": "open",
+        "evidenceRefs": ["E-fixture"]
+      }
+    ],
+    "decisions": [
+      {
+        "id": "decision-fixture",
+        "decision": "Use a role-specific context pack",
+        "reason": "Finite context is easier to verify",
+        "rejectedAlternatives": ["Inject all logs"],
+        "evidenceRefs": ["E-fixture"]
+      }
+    ],
+    "evidence": [
+      {
+        "id": "E-fixture",
+        "path": "Harness/tasks/task-context-fixture/REFERENCES.md",
+        "claim": "The fixture provides a stable evidence pointer",
+        "status": "verified"
+      }
+    ],
+    "attempts": [
+      {
+        "id": "attempt-fixture",
+        "action": "Try the bounded pack",
+        "outcome": "pending",
+        "evidenceRefs": ["E-fixture"]
+      }
+    ],
+    "handoff": {
+      "summary": "Context contract is ready for implementation",
+      "unresolved": ["Confirm the final byte budget"]
+    }
+  }
+}

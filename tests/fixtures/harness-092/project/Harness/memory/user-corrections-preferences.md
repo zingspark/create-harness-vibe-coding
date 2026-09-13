@@ -1,0 +1,2 @@
+<!-- harness-memory: {"id":"memory-preference-1","kind":"preference","scope":"project","when":"test output","rule":"Prefer concise JSON evidence","avoid":"Do not paste full logs","signals":["json"],"evidenceRefs":["E-memory-pref"],"counterexample":{"scenario":"A log is needed to diagnose a failure","outcome":"Reference its path instead"},"verification":{"status":"passed","method":"review","evidenceRef":"E-memory-pref"},"status":"active"} -->
+- When test output: Prefer concise JSON evidence. Avoid pasting full logs. Signals: json.

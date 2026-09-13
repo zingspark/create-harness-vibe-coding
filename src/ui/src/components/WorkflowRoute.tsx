@@ -32,7 +32,6 @@ import '@xterm/xterm/css/xterm.css';
 import {
   Bot,
   Boxes,
-  Download,
   Copy,
   ExternalLink,
   FileText,
@@ -143,6 +142,7 @@ import {
   fetchSkillsMarket,
   fetchSkillsHub,
   fetchNode as fetchRuntimeNode,
+  fetchWorkflowComposition,
   installSkillsMarketPack,
   patchNodeStateResponse as patchRuntimeNodeState,
   type WorkflowMcpHubResponse,
@@ -150,6 +150,8 @@ import {
   type WorkflowSkillsMarketResponse,
   type WorkflowSkillsHubResponse,
   type WorkflowRuntimeNode,
+  type WorkflowCompositionCapsuleProjection,
+  type WorkflowCompositionSnapshot,
 } from './workflow/nodeRuntimeClient';
 
 type Props = { onSelectSession: (sessionId: string) => void };
@@ -1473,38 +1475,8 @@ function capsuleNodeKeys(node: WorkflowNode | null | undefined) {
   return [node?.id, node?.graphNodeId, node?.sessionId].filter(Boolean).map(String);
 }
 
-function formatCapsuleDuration(value: unknown) {
-  const seconds = Math.max(1, Math.floor(Number(value) || 0));
-  if (seconds % 86400 === 0) return `${seconds / 86400}d`;
-  if (seconds % 3600 === 0) return `${seconds / 3600}h`;
-  if (seconds % 60 === 0) return `${seconds / 60}m`;
-  return `${seconds}s`;
-}
-
-function timerSequenceLabel(node: CanvasNode | null | undefined) {
-  const sequence = node?.eventState?.schedule?.cadence?.sequenceSeconds;
-  if (!Array.isArray(sequence) || sequence.length === 0) return '';
-  const values = sequence
-    .filter(value => Number.isFinite(Number(value)) && Number(value) > 0)
-    .slice(0, 4)
-    .map(formatCapsuleDuration);
-  if (values.length === 0) return '';
-  return `${values.join(' -> ')}${sequence.length > values.length ? '...' : ''}`;
-}
-
 function capsuleLinkTitle(node: CanvasNode) {
   return displayNodeTitle(node) || node.goalState?.title || node.eventState?.title || node.label || node.id;
-}
-
-function capsuleStatus(node: CanvasNode) {
-  if (eventTypeFromNode(node) === 'timer') {
-    if (node.eventState?.heartbeat?.watchdog?.enabled) {
-      return String(node.eventState.heartbeat.watchdog.state || 'watchdog');
-    }
-    return node.eventState?.enabled ? 'enabled' : 'paused';
-  }
-  if (isGoalNode(node)) return node.goalState?.status || node.status;
-  return displaySessionStatus(node.status);
 }
 
 function sameCapsuleLink(left: WorkflowCapsuleLink, right: WorkflowCapsuleLink) {
@@ -1660,146 +1632,121 @@ function retireResolvedCapsuleDockTombstones(state: WorkflowGraphState, tombston
   }
 }
 
-type CapsuleAccumulator = {
-  node: CanvasNode;
-  role: WorkflowCapsuleRole;
-  goals: Map<string, WorkflowCapsuleLink>;
-  timers: Map<string, WorkflowCapsuleLink>;
-  agents: Map<string, WorkflowCapsuleLink>;
-};
-
-function capsuleMapForRole(accumulator: CapsuleAccumulator, role: WorkflowCapsuleRole) {
-  if (role === 'goal') return accumulator.goals;
-  if (role === 'timer') return accumulator.timers;
-  return accumulator.agents;
-}
-
-function buildWorkflowCapsuleSummaries(nodes: CanvasNode[], edges: WorkflowGraphEdge[], dockLinks: CapsuleDockLink[] = []) {
+/**
+ * Adapt the backend-owned capsule projection to the existing renderer.
+ * Composition semantics are intentionally opaque to this route: mode,
+ * relationships, protocol steps, and timer labels all come from
+ * `snapshot.capsules`. Older servers get an empty neutral capsule so the
+ * layout remains usable without inventing a second semantic model in React.
+ */
+function buildCapsuleViewFromComposition(
+  nodes: CanvasNode[],
+  compositionSnapshot: WorkflowCompositionSnapshot | null,
+  fallbackDockLinks: CapsuleDockLink[] = [],
+) {
+  const projections = compositionSnapshot?.capsules || {};
   const nodeByAnyId = new Map<string, CanvasNode>();
-  const accumulators = new Map<string, CapsuleAccumulator>();
   for (const node of nodes) {
     for (const key of capsuleNodeKeys(node)) nodeByAnyId.set(key, node);
+  }
+  // These are presence checks only. Runtime state and relationships remain
+  // backend-owned; the route never derives display semantics from them.
+  const hasCompositionReadModel = Boolean(
+    compositionSnapshot?.fsm
+      && compositionSnapshot?.timer
+      && compositionSnapshot?.agents
+      && compositionSnapshot?.edges
+      && compositionSnapshot?.lastTransitions,
+  );
+  const uiLinksForNode = (node: CanvasNode) => fallbackDockLinks
+    .filter(link => link.nodeIds.some(linkNodeId => capsuleNodeKeys(node).includes(String(linkNodeId))))
+    .map(link => ({
+      linkId: String(link.id || `dock:${link.nodeIds.join('::')}`),
+      nodeIds: link.nodeIds.map(String),
+      anchorId: String(link.anchorId || ''),
+      draggedId: String(link.draggedId || ''),
+      uiOnly: true,
+    }));
+  const uiDockPillsForNode = (
+    node: CanvasNode,
+    uiLinks: readonly { nodeIds: readonly string[] }[],
+  ) => {
+    const pills: WorkflowCapsuleLink[] = [];
+    const seenPeerIds = new Set<string>();
+    for (const uiLink of uiLinks) {
+      const peer = uiLink.nodeIds
+        .map(nodeId => nodeByAnyId.get(String(nodeId)))
+        .find(candidate => candidate && candidate.id !== node.id && capsuleRoleForNode(candidate) !== 'resource');
+      const peerRole = peer && capsuleRoleForNode(peer);
+      if (!peer || !peerRole || peerRole === 'resource' || seenPeerIds.has(peer.id)) continue;
+      seenPeerIds.add(peer.id);
+      pills.push({
+        nodeId: peer.id,
+        title: capsuleLinkTitle(peer),
+        role: peerRole,
+        relation: 'ui-dock',
+        direction: 'bidirectional',
+        status: 'linked',
+      });
+    }
+    return pills;
+  };
+  const mergeUiDockPills = (
+    links: WorkflowCapsuleLink[] | readonly WorkflowCapsuleLink[] | undefined,
+    uiPills: WorkflowCapsuleLink[],
+  ) => {
+    const merged = [...(links || [])];
+    const existingIds = new Set(merged.map(link => link.nodeId));
+    for (const pill of uiPills) {
+      if (existingIds.has(pill.nodeId)) continue;
+      existingIds.add(pill.nodeId);
+      merged.push(pill);
+    }
+    return merged;
+  };
+  const result = new Map<string, WorkflowCapsuleSummary>();
+  for (const node of nodes) {
+    // Role is only a rendering concern: resource cards do not render the
+    // capsule strip. It must not be used to infer composition semantics.
     const role = capsuleRoleForNode(node);
     if (!role || role === 'resource') continue;
-    accumulators.set(node.id, {
-      node,
-      role,
-      goals: new Map(),
-      timers: new Map(),
-      agents: new Map(),
-    });
-  }
-
-  const addLink = (
-    owner: CanvasNode,
-    peer: CanvasNode,
-    edge: WorkflowGraphEdge,
-    handle: string | null | undefined,
-  ) => {
-    const ownerAccumulator = accumulators.get(owner.id);
-    const peerRole = capsuleRoleForNode(peer);
-    if (!ownerAccumulator || !peerRole || peerRole === 'resource' || owner.id === peer.id) return;
-    capsuleMapForRole(ownerAccumulator, peerRole).set(peer.id, {
-      nodeId: peer.id,
-      title: capsuleLinkTitle(peer),
-      role: peerRole,
-      relation: edge.relation || 'wf-bridge',
-      direction: normalizeWorkflowEdgeDirection(edge.direction),
-      status: capsuleStatus(peer),
-      edgeId: edge.id,
-      handle: String(handle || '').trim(),
-    });
-  };
-
-  for (const edge of edges) {
-    const source = nodeByAnyId.get(String(edge.source || edge.from || ''));
-    const target = nodeByAnyId.get(String(edge.target || edge.to || ''));
-    if (!source || !target) continue;
-    if (!capsuleRoleForNode(source) || !capsuleRoleForNode(target)) continue;
-    addLink(source, target, edge, edge.targetHandle);
-    addLink(target, source, edge, edge.sourceHandle);
-  }
-  for (const dockLink of dockLinks) {
-    for (const connection of dockLink.connections) {
-      const source = nodeByAnyId.get(String(connection.source || ''));
-      const target = nodeByAnyId.get(String(connection.target || ''));
-      if (!source || !target) continue;
-      if (!capsuleRoleForNode(source) || !capsuleRoleForNode(target)) continue;
-      const edge: WorkflowGraphEdge = {
-        id: connection.id,
-        source: source.id,
-        target: target.id,
-        from: source.id,
-        to: target.id,
-        relation: connection.relation,
-        direction: connection.direction,
-        sourceHandle: connection.sourceHandle || null,
-        targetHandle: connection.targetHandle || null,
-      };
-      addLink(source, target, edge, edge.targetHandle);
-      addLink(target, source, edge, edge.sourceHandle);
+    const projection: WorkflowCompositionCapsuleProjection | undefined = capsuleNodeKeys(node)
+      .map(key => projections[key])
+      .find(Boolean);
+    const backendUiLinks = projection?.capsuleUiLinks;
+    const hasBackendUiProjection = Boolean(
+      Array.isArray(backendUiLinks) || typeof projection?.docked === 'boolean',
+    );
+    const uiLinks = hasBackendUiProjection
+      ? (Array.isArray(backendUiLinks) ? backendUiLinks : [])
+      : uiLinksForNode(node);
+    const docked = hasBackendUiProjection
+      ? Boolean(projection?.docked ?? uiLinks.length > 0)
+      : uiLinks.length > 0;
+    const uiDockPills = uiDockPillsForNode(node, uiLinks);
+    if (projection) {
+      result.set(node.id, {
+        ...projection,
+        nodeId: node.id,
+        goals: mergeUiDockPills(projection.goals, uiDockPills.filter(link => link.role === 'goal')),
+        timers: mergeUiDockPills(projection.timers, uiDockPills.filter(link => link.role === 'timer')),
+        agents: mergeUiDockPills(projection.agents, uiDockPills.filter(link => link.role === 'agent')),
+        docked,
+        capsuleUiLinks: uiLinks,
+      });
+      continue;
     }
-  }
-
-  const result = new Map<string, WorkflowCapsuleSummary>();
-  for (const accumulator of accumulators.values()) {
-    const goals = [...accumulator.goals.values()].sort((left, right) => left.title.localeCompare(right.title));
-    const timers = [...accumulator.timers.values()].sort((left, right) => left.title.localeCompare(right.title));
-    const agents = [...accumulator.agents.values()].sort((left, right) => left.title.localeCompare(right.title));
-    const hasGoal = accumulator.role === 'goal' || goals.length > 0;
-    const hasTimer = accumulator.role === 'timer' || timers.length > 0;
-    const hasAgent = accumulator.role === 'agent' || agents.length > 0;
-    const mode = hasGoal && hasTimer && hasAgent
-      ? 'goal-loop'
-      : (hasGoal && hasTimer
-          ? 'goal-timer'
-          : (hasGoal && hasAgent
-              ? 'goal-agent'
-              : (hasTimer && hasAgent ? 'timer-agent' : 'standalone')));
-    const timerNodes = [
-      ...(accumulator.role === 'timer' ? [accumulator.node] : []),
-      ...timers.map(link => nodeByAnyId.get(link.nodeId)).filter(Boolean),
-    ] as CanvasNode[];
-    const sequenceLabel = timerNodes.map(timerSequenceLabel).find(Boolean) || '';
-    const watchdogTimer = timerNodes.find(timer => timer.eventState?.heartbeat?.watchdog?.enabled);
-    const ownGoalWdt = accumulator.node.goalState?.wdt;
-    const wdtState = String(watchdogTimer?.eventState?.heartbeat?.watchdog?.state || ownGoalWdt?.state || '').trim();
-    const stateLabel = mode === 'goal-loop'
-      ? 'Goal loop'
-      : (mode === 'goal-timer'
-          ? 'Timed goal'
-          : (mode === 'goal-agent'
-              ? 'Goal owner'
-              : (mode === 'timer-agent'
-                  ? 'Timed agent'
-                  : 'Standalone')));
-    const nextLabel = mode === 'goal-loop'
-      ? (sequenceLabel || 'Connect -> prompt -> ack')
-      : (mode === 'goal-timer'
-          ? 'Drop Agent to run'
-          : (mode === 'goal-agent'
-              ? 'Drop Timer for checks'
-              : (mode === 'timer-agent'
-                  ? 'Drop Goal to anchor'
-                  : (accumulator.role === 'goal'
-                      ? 'Drop Timer or Agent'
-                      : (accumulator.role === 'timer' ? 'Drop Goal or Agent' : 'Drop Goal or Timer')))));
-    const protocolSteps = mode === 'goal-loop'
-      ? ['connect', 'prompt', 'ack']
-      : (mode === 'timer-agent'
-          ? ['connect', 'trigger', 'ack']
-          : (mode === 'standalone' ? ['connect'] : ['connect', 'sync']));
-    result.set(accumulator.node.id, {
-      nodeId: accumulator.node.id,
-      mode,
-      goals,
-      timers,
-      agents,
-      stateLabel,
-      nextLabel,
-      protocolSteps,
-      sequenceLabel: sequenceLabel || undefined,
-      wdtState: wdtState || undefined,
+    result.set(node.id, {
+      nodeId: node.id,
+      mode: 'standalone',
+      goals: uiDockPills.filter(link => link.role === 'goal'),
+      timers: uiDockPills.filter(link => link.role === 'timer'),
+      agents: uiDockPills.filter(link => link.role === 'agent'),
+      stateLabel: 'Standalone',
+      nextLabel: hasCompositionReadModel ? 'Composition snapshot' : 'Composition unavailable',
+      protocolSteps: [],
+      docked,
+      capsuleUiLinks: uiLinks,
     });
   }
   return result;
@@ -4021,6 +3968,44 @@ export default function WorkflowRoute({ onSelectSession }: Props) {
 function WorkflowRouteInner({ onSelectSession }: Props) {
   const t = useT();
   const { workflow, runtimes, tasks, projectRoot, loading, error, setError, reload } = useAutoLoadedWorkflow();
+  const [compositionSnapshot, setCompositionSnapshot] = useState<WorkflowCompositionSnapshot | null>(null);
+  const compositionId = String(workflow?.workflowId || '').trim();
+  const compositionGraphVersion = Number(workflow?.graph?.version);
+  useEffect(() => {
+    let cancelled = false;
+    let inFlight = false;
+    const loadComposition = async () => {
+      if (cancelled || !compositionId || inFlight) return;
+      inFlight = true;
+      try {
+        const snapshot = await fetchWorkflowComposition(
+          compositionId,
+          Number.isFinite(compositionGraphVersion) ? compositionGraphVersion : undefined,
+          // Timer, wakeup, and acknowledgement state may advance without a
+          // graph revision. Always revalidate this read model on the same
+          // cadence as workflow polling so the canvas cannot stay stale.
+          { forceRefresh: true },
+        );
+        if (!cancelled) setCompositionSnapshot(snapshot);
+      } catch {
+        // Composition is an auxiliary read model. Keep the graph usable when
+        // an older backend does not expose this endpoint yet.
+        if (!cancelled) setCompositionSnapshot(null);
+      } finally {
+        inFlight = false;
+      }
+    };
+    if (!compositionId) {
+      setCompositionSnapshot(null);
+      return () => { cancelled = true; };
+    }
+    loadComposition();
+    const interval = window.setInterval(loadComposition, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [compositionGraphVersion, compositionId]);
   const [runtimeId, setRuntimeId] = useState('');
   const [bindTask, setBindTask] = useState(false);
   const [taskId, setTaskId] = useState('');
@@ -4038,6 +4023,8 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
   const [agentCapabilities, setAgentCapabilities] = useState('');
   const defaultRoleTitle = agentKind === 'main' ? 'ceo' : 'implementer';
   const effectiveRoleTitle = agentRoleTitle || defaultRoleTitle;
+  const workflowOwnsTask = workflowMode === 'wf' || workflowMode === 'wf-max';
+  const bindableTasks = workflowOwnsTask ? tasks.filter(task => task.wfManaged) : tasks;
   const [selectedNodeId, setSelectedNodeId] = useState('');
   const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(() => new Set());
   const [launchingAgent, setLaunchingAgent] = useState(false);
@@ -4071,7 +4058,7 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
   const [skillsMarket, setSkillsMarket] = useState<WorkflowSkillsMarketResponse | null>(null);
   const [skillsMarketLoading, setSkillsMarketLoading] = useState(false);
   const [skillsMarketError, setSkillsMarketError] = useState('');
-  const [skillsMarketInstallTarget, setSkillsMarketInstallTarget] = useState('project-agents');
+  const [skillsMarketInstallTarget, setSkillsMarketInstallTarget] = useState('');
   const [skillsMarketBusyPackId, setSkillsMarketBusyPackId] = useState('');
   const [mcpHub, setMcpHub] = useState<WorkflowMcpHubResponse | null>(null);
   const [mcpHubLoading, setMcpHubLoading] = useState(false);
@@ -4095,7 +4082,13 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
   // file.changed events). File cards show a badge until the user refreshes.
   const [fileChangedNodeIds, setFileChangedNodeIds] = useState<Set<string>>(() => new Set());
   const [displayViewRequest, setDisplayViewRequest] = useState<{ nodeId: string; title: string } | null>(null);
-  const [skillsOverlay, setSkillsOverlay] = useState<{ open: boolean; mode: 'hub' | 'group'; groupNodeId?: string }>({ open: false, mode: 'hub' });
+  const [skillsOverlay, setSkillsOverlay] = useState<{
+    open: boolean;
+    mode: 'hub' | 'group';
+    groupNodeId?: string;
+    targetAgentId?: string;
+    createPosition?: GraphPosition;
+  }>({ open: false, mode: 'hub' });
   // Set while a composed skill-set drag is in flight so a cancelled drag can
   // restore the hub overlay instead of leaving the user without a surface.
   const skillsDraftDragActiveRef = useRef(false);
@@ -4294,8 +4287,8 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
     [canvasNodes, operationNow, workflowOperationRecords],
   );
   const capsuleByNodeId = useMemo(
-    () => buildWorkflowCapsuleSummaries(canvasNodes, graphState.edges, graphState.capsuleDockLinks),
-    [canvasNodes, graphState.capsuleDockLinks, graphState.edges],
+    () => buildCapsuleViewFromComposition(canvasNodes, compositionSnapshot, graphState.capsuleDockLinks),
+    [canvasNodes, compositionSnapshot, graphState.capsuleDockLinks],
   );
 
   useEffect(() => {
@@ -4432,6 +4425,12 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
     if (!target) return null;
     return resolveCanvasNode(target);
   }, [capabilityHub?.targetAgentId, resolveCanvasNode]);
+  const skillsOverlayTargetAgent = useMemo(() => {
+    const target = skillsOverlay.targetAgentId || '';
+    if (!target) return null;
+    const node = resolveCanvasNode(target);
+    return node && isAgentNode(node) ? node : null;
+  }, [resolveCanvasNode, skillsOverlay.targetAgentId]);
   const capabilityHubTargetCapability = useMemo(() => {
     const target = capabilityHub?.targetCapabilityId || '';
     if (!target) return null;
@@ -4443,6 +4442,17 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
     || null;
   const selectedRuntimeRenderer = selectedRuntimeNode ? getNodeRenderer(selectedRuntimeNode.kind) : undefined;
   const SelectedRuntimeSettings = selectedRuntimeRenderer?.SettingsComponent;
+  // A terminal-session graph node may briefly receive an unrelated runtime
+  // record from an older/partial backend snapshot. Keep the legacy session
+  // settings surface for that mismatch instead of opening a component panel.
+  const selectedRuntimeIsSessionMismatch = selectedNode?.kind === 'terminal-session'
+    && Boolean(selectedNode.sessionId)
+    && Boolean(selectedRuntimeNode)
+    && selectedRuntimeNode?.kind !== 'agent';
+  const selectedSessionUsesLegacySettings = selectedNode?.kind === 'terminal-session'
+    && Boolean(selectedNode.sessionId)
+    && !selectedRuntimeLoading
+    && (!selectedRuntimeNode || selectedRuntimeIsSessionMismatch || !SelectedRuntimeSettings);
   const selectedNodeComponentState = (selectedNode as CanvasNode | null)?.componentState;
   // Preview runtime node for terminal-session agent nodes while the real
   // runtime node is still loading: lets AgentNodeSettings render its shell
@@ -4555,23 +4565,25 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
   }, [capabilityHub, capabilityHubSearch, t]);
 
   useEffect(() => {
-    if (!capabilityHub || capabilityHub.kind !== 'skills' || skillsHubTab !== 'market') return;
+    const marketVisible = (capabilityHub?.kind === 'skills' && skillsHubTab === 'market')
+      || (skillsOverlay.open && skillsOverlay.mode === 'hub');
+    if (!marketVisible) return;
     let cancelled = false;
     setSkillsMarketLoading(true);
     setSkillsMarketError('');
     fetchSkillsMarket(capabilityHubSearch)
       .then(result => {
-        if (!cancelled) {
-          setSkillsMarket(result);
-          const defaultTarget = result.installTargets.find(target => target.default)?.id || result.installTargets[0]?.id || 'project-agents';
-          setSkillsMarketInstallTarget(current => result.installTargets.some(target => target.id === current) ? current : defaultTarget);
-        }
+        if (cancelled) return;
+        setSkillsMarket(result);
+        const defaultTarget = result.installTargets.find(target => target.default)?.id
+          || result.installTargets[0]?.id
+          || 'project-agents';
+        setSkillsMarketInstallTarget(current => result.installTargets.some(target => target.id === current) ? current : defaultTarget);
       })
       .catch((e: any) => {
-        if (!cancelled) {
-          setSkillsMarket(null);
-          setSkillsMarketError(e?.message || t('Failed to load Skills Market'));
-        }
+        if (cancelled) return;
+        setSkillsMarket(null);
+        setSkillsMarketError(e?.message || t('Failed to load Skills Market'));
       })
       .finally(() => {
         if (!cancelled) setSkillsMarketLoading(false);
@@ -4579,7 +4591,7 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [capabilityHub, capabilityHubSearch, skillsHubTab, t]);
+  }, [capabilityHub, capabilityHubSearch, skillsHubTab, skillsOverlay.mode, skillsOverlay.open, t]);
 
   useEffect(() => {
     if (!capabilityHub || capabilityHub.kind !== 'mcp') return;
@@ -5448,8 +5460,12 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
 
   useEffect(() => {
     const list = tasks ?? [];
-    setTaskId(current => current && list.some(task => task.taskId === current) ? current : list[0]?.taskId || '');
-  }, [tasks]);
+    const hasLifecycleMetadata = list.some(task => Object.hasOwn(task, 'isActive') || Object.hasOwn(task, 'wfManaged'));
+    const eligible = workflowOwnsTask ? list.filter(task => task.wfManaged) : list;
+    const focused = eligible.find(task => task.isActive && task.wfManaged)
+      || (hasLifecycleMetadata ? null : eligible[0]);
+    setTaskId(current => current && eligible.some(task => task.taskId === current) ? current : focused?.taskId || '');
+  }, [tasks, workflowOwnsTask]);
 
   useEffect(() => {
     if (!graphLoaded || canvasNodes.length === 0) return;
@@ -5964,6 +5980,9 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
 
   const undoGraph = useCallback(async () => {
     if (!historyActorNodeId) return;
+    const current = graphStateRef.current;
+    const historyEntry = current.undoStack[current.undoStack.length - 1];
+    const recovery = historyEntry?.deletedNodes?.[0];
     try {
       const result = await apiJson<{ ok?: boolean; applied?: boolean | null }>(`/api/workflow/nodes/${encodeURIComponent(historyActorNodeId)}/actions/graph.undo`, {
         method: 'POST',
@@ -5972,14 +5991,36 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
       if (result?.applied) {
         invalidateApiCache('/api/a2a/snapshot');
         await reloadRef.current(true);
+      } else if (recovery) {
+        // Compatibility path for control planes that expose graph.undo as a
+        // generic action but do not yet apply the shared graph history. The
+        // deletion recovery is already captured locally, so restore the typed
+        // node and move that entry to the local redo stack.
+        await executeRuntimeNodeAction(recovery.graphId, 'node.restore', {
+          node: recovery.node,
+          edges: recovery.edges,
+        });
+        restoreNodeLocally(recovery);
+        const restored = graphStateRef.current;
+        applyGraphStateLocally({
+          ...restored,
+          undoStack: restored.undoStack.slice(0, -1),
+          redoStack: [...restored.redoStack, historyEntry].slice(-40),
+        });
+        invalidateApiCache('/api/workflow/nodes');
+        invalidateApiCache('/api/a2a/snapshot');
+        await reloadRef.current(true);
       }
     } catch (e: any) {
       setError(e?.message || t('Failed to undo'));
     }
-  }, [historyActorNodeId, setError, t]);
+  }, [applyGraphStateLocally, historyActorNodeId, restoreNodeLocally, setError, t]);
 
   const redoGraph = useCallback(async () => {
     if (!historyActorNodeId) return;
+    const current = graphStateRef.current;
+    const historyEntry = current.redoStack[current.redoStack.length - 1];
+    const recovery = historyEntry?.deletedNodes?.[0];
     try {
       const result = await apiJson<{ ok?: boolean; applied?: boolean | null }>(`/api/workflow/nodes/${encodeURIComponent(historyActorNodeId)}/actions/graph.redo`, {
         method: 'POST',
@@ -5988,11 +6029,23 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
       if (result?.applied) {
         invalidateApiCache('/api/a2a/snapshot');
         await reloadRef.current(true);
+      } else if (recovery) {
+        await executeRuntimeNodeAction(recovery.graphId, 'node.delete');
+        removeNodeFromCanvas(recovery, false);
+        const deleted = graphStateRef.current;
+        applyGraphStateLocally({
+          ...deleted,
+          undoStack: [...deleted.undoStack, historyEntry].slice(-40),
+          redoStack: deleted.redoStack.slice(0, -1),
+        });
+        invalidateApiCache('/api/workflow/nodes');
+        invalidateApiCache('/api/a2a/snapshot');
+        await reloadRef.current(true);
       }
     } catch (e: any) {
       setError(e?.message || t('Failed to redo'));
     }
-  }, [historyActorNodeId, setError, t]);
+  }, [applyGraphStateLocally, historyActorNodeId, removeNodeFromCanvas, setError, t]);
 
   const openCreateNodePanel = useCallback((position?: { flowX: number; flowY: number; x?: number; y?: number; kind?: CreateNodeKind | null }) => {
     const bounds = flowWrapperRef.current?.getBoundingClientRect();
@@ -6349,20 +6402,27 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
     setCreatePanel(null);
     setContextMenu(null);
     setNodeContextMenu(null);
-    setCapabilityHub({ kind, origin, targetAgentId, createPosition, targetCapabilityId: options.targetCapabilityId });
+    if (kind === 'skills') {
+      // Skills are served by one fullscreen surface. Keep the agent target
+      // and requested create position in that surface instead of opening the
+      // legacy capability drawer alongside it.
+      setCapabilityHub(null);
+      setSkillsOverlay({ open: true, mode: 'hub', targetAgentId, createPosition });
+    } else {
+      setSkillsOverlay(current => current.open ? { open: false, mode: current.mode } : current);
+      setCapabilityHub({ kind, origin, targetAgentId, createPosition, targetCapabilityId: options.targetCapabilityId });
+    }
     setSkillsHubTab(options.initialTab || 'installed');
     setCapabilityHubSearch('');
     setSkillsHubError('');
-    setSkillsMarketError('');
     setMcpHubError('');
     setCapabilityHubBusySkillId('');
     setCapabilityHubBusyGroupId('');
-    setSkillsMarketBusyPackId('');
     setCapabilityHubBusyMcpServerId('');
   }, []);
 
   const attachSkillToTargetAgent = useCallback(async (skill: WorkflowSkillsHubResponse['skills'][number]) => {
-    const target = capabilityHubTargetAgent;
+    const target = capabilityHubTargetAgent || skillsOverlayTargetAgent;
     if (!target) {
       setSkillsHubError(t('Select an Agent node before attaching a skill.'));
       return;
@@ -6396,7 +6456,7 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
     } finally {
       setCapabilityHubBusySkillId(current => current === skill.id ? '' : current);
     }
-  }, [alertToast, applyNodeConfigUpdate, capabilityHubTargetAgent, t]);
+  }, [alertToast, applyNodeConfigUpdate, capabilityHubTargetAgent, skillsOverlayTargetAgent, t]);
 
   const createSkillGroupAtPosition = useCallback(async (input: {
     skillIds: string[];
@@ -6421,7 +6481,7 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
       setSkillsHubError(t('Skill group has no indexed skills.'));
       return;
     }
-    const target = capabilityHubTargetAgent;
+    const target = capabilityHubTargetAgent || skillsOverlayTargetAgent;
     // Preferred spot is the parent agent's vicinity when the skill group will
     // be edge-connected to it (AC-001), else the caller-provided position.
     const position = findNearestFreePosition({
@@ -6501,14 +6561,14 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
       setSkillsHubError(e?.message || t('Failed to create skill group node'));
       throw e;
     }
-  }, [alertToast, capabilityHubTargetAgent, canvasNodes, nodeModes, reload, removePendingNode, skillsById, t, updateGraph]);
+  }, [alertToast, capabilityHubTargetAgent, canvasNodes, nodeModes, reload, removePendingNode, skillsById, skillsOverlayTargetAgent, t, updateGraph]);
 
   const createSkillGroupNode = useCallback(async (group: WorkflowSkillsHubResponse['groups'][number]) => {
-    const target = capabilityHubTargetAgent;
+    const target = capabilityHubTargetAgent || skillsOverlayTargetAgent;
     const fallbackPosition = target
       ? { x: target.x + (target.width || CARD_NODE_W) + 80, y: target.y }
       : { x: 320, y: 420 };
-    const position = capabilityHub?.createPosition || fallbackPosition;
+    const position = capabilityHub?.createPosition || skillsOverlay.createPosition || fallbackPosition;
     setCapabilityHubBusyGroupId(group.id);
     try {
       await createSkillGroupAtPosition({
@@ -6524,32 +6584,33 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
     } finally {
       setCapabilityHubBusyGroupId(current => current === group.id ? '' : current);
     }
-  }, [capabilityHub?.createPosition, capabilityHubTargetAgent, createSkillGroupAtPosition]);
+  }, [capabilityHub?.createPosition, capabilityHubTargetAgent, createSkillGroupAtPosition, skillsOverlay.createPosition, skillsOverlayTargetAgent]);
 
-  const installSkillsPackFromMarket = useCallback(async (pack: WorkflowSkillsMarketPack) => {
-    if (!pack?.slug && !pack?.packSlug) return;
+  const installSkillsPackFromMarket = useCallback(async (pack: WorkflowSkillsMarketPack, targetScopeOverride?: string) => {
     const packSlug = pack.packSlug || pack.slug;
-    const target = capabilityHubTargetAgent;
+    if (!packSlug) return;
+    const target = capabilityHubTargetAgent || skillsOverlayTargetAgent;
     const targetGroup = capabilityHubTargetCapability && capabilityTypeFromNode(capabilityHubTargetCapability) === 'skill-group'
       ? capabilityHubTargetCapability
       : null;
-    const fallbackPosition = target
-      ? { x: target.x + (target.width || CARD_NODE_W) + 96, y: target.y + 140 }
-      : { x: 420, y: 460 };
-    const position = capabilityHub?.createPosition || fallbackPosition;
-    setSkillsMarketBusyPackId(pack.id || packSlug);
+    const position = capabilityHub?.createPosition || skillsOverlay.createPosition
+      || (target
+        ? { x: target.x + (target.width || CARD_NODE_W) + 96, y: target.y + 140 }
+        : { x: 420, y: 460 });
+    const busyId = pack.id || packSlug;
+    setSkillsMarketBusyPackId(busyId);
     setSkillsMarketError('');
     try {
       const result = await installSkillsMarketPack({
         provider: pack.provider || 'skillstore',
         packSlug,
-        targetScope: skillsMarketInstallTarget || 'project-agents',
+        targetScope: targetScopeOverride || skillsMarketInstallTarget || 'project-agents',
         createGroup: true,
         groupNodeId: targetGroup ? (targetGroup.graphNodeId || targetGroup.id) : undefined,
         groupTitle: pack.name || packSlug,
         position,
       });
-      const installedGroupNode = result.group?.node as any;
+      const installedGroupNode = (result.group as any)?.node || (result.group as any)?.group?.node;
       const groupNodeId = installedGroupNode?.nodeId || installedGroupNode?.id || '';
       if (groupNodeId && target && !targetGroup) {
         const sourceGraphId = target.graphNodeId || target.id;
@@ -6567,7 +6628,6 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
         setSelectedNodeId(groupNodeId);
         setSelectedNodeIds(new Set([groupNodeId]));
       }
-      setSkillsHubTab('groups');
       alertToast({
         message: targetGroup ? t('Skill group updated') : t('Skill pack installed'),
         kind: 'success',
@@ -6577,17 +6637,9 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
     } catch (e: any) {
       setSkillsMarketError(e?.message || t('Failed to install skill pack'));
     } finally {
-      setSkillsMarketBusyPackId(current => current === (pack.id || packSlug) ? '' : current);
+      setSkillsMarketBusyPackId(current => current === busyId ? '' : current);
     }
-  }, [
-    alertToast,
-    capabilityHub?.createPosition,
-    capabilityHubTargetAgent,
-    capabilityHubTargetCapability,
-    reload,
-    skillsMarketInstallTarget,
-    t,
-  ]);
+  }, [alertToast, capabilityHub?.createPosition, capabilityHubTargetAgent, capabilityHubTargetCapability, reload, skillsMarketInstallTarget, skillsOverlay.createPosition, skillsOverlayTargetAgent, t]);
 
   const createMcpConnectorNode = useCallback(async (server: WorkflowMcpHubResponse['servers'][number]) => {
     if (!server?.id) {
@@ -7210,11 +7262,19 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
     const actorNodeId = agentActorForDock();
     if (!actorNodeId) return false;
     try {
-      await apiJson(`/api/workflow/nodes/${encodeURIComponent(actorNodeId)}/actions/${action}`, {
+      const response = await apiJson<{
+        dockLink?: unknown;
+        removed?: unknown;
+      }>(`/api/workflow/nodes/${encodeURIComponent(actorNodeId)}/actions/${action}`, {
         method: 'POST',
         body: JSON.stringify(payload),
       });
-      return true;
+      // A few older control planes answer unknown typed actions with a generic
+      // `{ ok: true }`. Treat that as unsupported so the caller can commit the
+      // UI-only graph-map fallback instead of suppressing it.
+      return action === 'agent.detachDock'
+        ? typeof response?.removed === 'boolean'
+        : Boolean(response?.dockLink);
     } catch (e: any) {
       // apiJson rewrites the message from typed error bodies, so detect the
       // "older backend" 404s by status text or the backend's typed codes
@@ -8137,7 +8197,7 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
     return (
       <>
         <div className="workflow-skills-hub-tabs" role="tablist" aria-label={t('Skills Hub sections')}>
-          {(['installed', 'market', 'groups'] as const).map(tab => (
+          {(['installed', 'groups'] as const).map(tab => (
             <button
               key={tab}
               type="button"
@@ -8146,7 +8206,7 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
               aria-selected={skillsHubTab === tab ? 'true' : 'false'}
               onClick={() => setSkillsHubTab(tab)}
             >
-              {tab === 'installed' ? t('Installed') : tab === 'market' ? t('Market') : t('Groups')}
+              {tab === 'installed' ? t('Installed') : t('Groups')}
             </button>
           ))}
         </div>
@@ -8155,9 +8215,6 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
           <div data-testid="workflow-skill-group-workbench" data-node-id={targetGroupId} className="workflow-skill-group-workbench">
             <div className="workflow-skill-group-workbench-title">
               <strong>{targetGroupState.title || targetGroupNode?.label || t('Skill Group')}</strong>
-              <button type="button" data-testid="workflow-skills-update-group" onClick={() => setSkillsHubTab('market')}>
-                <Download size={12} /> {t('Add pack')}
-              </button>
             </div>
             <div className="workflow-skill-group-grid">
               <section data-testid="workflow-skill-group-section" data-section="skills">
@@ -8257,68 +8314,6 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
               })}
               {!skillsHubLoading && !skillsHubError && (skillsHub?.skills || []).length === 0 && (
                 <div className="workflow-capability-hub-empty">{t('No skills found')}</div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {skillsHubTab === 'market' && (
-          <div data-testid="workflow-skills-hub-panel" data-tab="market" className="workflow-skills-hub-panel">
-            <div data-testid="workflow-capability-hub-summary" className="workflow-capability-hub-summary">
-              <span>{skillsMarketLoading ? t('Loading...') : t('Packs')}</span>
-              <strong>{skillsMarket?.summary.packCount ?? 0}</strong>
-              <span>{t('Installed')}</span>
-              <strong>{skillsMarket?.summary.installedPackCount ?? 0}</strong>
-            </div>
-            <label className="workflow-skills-install-target">
-              <span>{t('Target')}</span>
-              <select
-                data-testid="workflow-skills-install-target"
-                value={skillsMarketInstallTarget}
-                onChange={event => setSkillsMarketInstallTarget(event.target.value)}
-              >
-                {(skillsMarket?.installTargets || skillsHub?.installTargets || []).map(target => (
-                  <option key={target.id} value={target.id}>{target.label} - {target.path}</option>
-                ))}
-              </select>
-            </label>
-            {skillsMarketError && <div className="workflow-capability-hub-error">{skillsMarketError}</div>}
-            <div className="workflow-capability-hub-list">
-              {(skillsMarket?.packs || []).map((pack: WorkflowSkillsMarketPack) => {
-                const busy = skillsMarketBusyPackId === (pack.id || pack.slug);
-                const installDisabled = busy || !pack.installable || (pack.installed && !targetGroupState);
-                return (
-                  <div
-                    key={pack.id || pack.slug}
-                    data-testid="workflow-skills-pack-row"
-                    data-provider={pack.provider}
-                    data-pack-slug={pack.packSlug || pack.slug}
-                    data-installed={pack.installed ? 'true' : 'false'}
-                    data-skill-count={pack.skillCount}
-                    data-lock-ref={pack.lockRef || ''}
-                    className="workflow-capability-hub-item workflow-skills-pack-row"
-                  >
-                    <div className="workflow-capability-hub-item-main">
-                      <strong>{pack.name || pack.slug}</strong>
-                      <span data-testid="workflow-skills-pack-detail">
-                        {[pack.category, `${pack.skillCount} ${t('skills')}`, pack.installCount ? `${pack.installCount} ${t('installs')}` : ''].filter(Boolean).join(' - ')}
-                      </span>
-                      <small>{pack.description || pack.slug}</small>
-                    </div>
-                    <button
-                      type="button"
-                      data-testid="workflow-skills-install-pack"
-                      data-install-state={busy ? 'installing' : pack.installed ? 'installed' : 'ready'}
-                      disabled={installDisabled}
-                      onClick={() => installSkillsPackFromMarket(pack)}
-                    >
-                      {busy ? t('Installing') : targetGroupState ? t('Add') : pack.installed ? t('Installed') : t('Install')}
-                    </button>
-                  </div>
-                );
-              })}
-              {!skillsMarketLoading && !skillsMarketError && (skillsMarket?.packs || []).length === 0 && (
-                <div className="workflow-capability-hub-empty">{t('No packs found')}</div>
               )}
             </div>
           </div>
@@ -8477,7 +8472,10 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
 
   const skillsOverlayAgents = useMemo((): WorkflowSkillsOverlayAgent[] => {
     const group = skillsOverlayGroupNode;
-    if (!group) return [];
+    if (!group) {
+      const target = skillsOverlayTargetAgent;
+      return target ? [{ nodeId: target.id, label: target.label || target.id }] : [];
+    }
     const groupKeys = new Set([group.graphNodeId, group.id, group.sessionId].filter(Boolean).map(String));
     const peers = new Map<string, WorkflowNode>();
     for (const edge of graphState.edges) {
@@ -8493,29 +8491,45 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
       if (peer && isAgentNode(peer)) peers.set(peer.id, peer);
     }
     return [...peers.values()].map(node => ({ nodeId: node.id, label: node.label || node.id }));
-  }, [canvasNodeById, canvasNodes, graphState.edges, skillsOverlayGroupNode]);
+  }, [canvasNodeById, canvasNodes, graphState.edges, skillsOverlayGroupNode, skillsOverlayTargetAgent]);
 
   const skillsOverlayHub = useMemo((): WorkflowSkillsOverlayHub | undefined => (
     skillsOverlay.mode === 'hub'
-      ? { tabs: ['installed', 'market', 'groups'], activeTab: skillsHubTab, installTargets: [skillsMarketInstallTarget] }
+      ? { tabs: ['installed', 'market', 'groups'], activeTab: skillsHubTab }
       : undefined
-  ), [skillsHubTab, skillsMarketInstallTarget, skillsOverlay.mode]);
+  ), [skillsHubTab, skillsOverlay.mode]);
 
-  const skillsOverlaySkills = useMemo((): WorkflowSkillsOverlaySkill[] => (
-    (skillsHub?.skills || []).map(skill => ({
-      id: skill.id,
-      name: skill.name || skill.id.replace(/^skill:/, ''),
-      title: skill.title || skill.name || skill.id,
-    }))
-  ), [skillsHub]);
+  const skillsOverlaySkills = useMemo((): WorkflowSkillsOverlaySkill[] => {
+    const query = capabilityHubSearch.trim().toLowerCase();
+    return (skillsHub?.skills || [])
+      .filter(skill => !query || `${skill.id} ${skill.name} ${skill.title} ${skill.description}`.toLowerCase().includes(query))
+      .map(skill => ({
+        id: skill.id,
+        name: skill.name || skill.id.replace(/^skill:/, ''),
+        title: skill.title || skill.name || skill.id,
+      }));
+  }, [capabilityHubSearch, skillsHub]);
+
+  const skillsOverlayAttachedSkillIds = useMemo(() => {
+    const target = skillsOverlayTargetAgent;
+    if (!target) return [];
+    const attached = new Set(skillsForNode(target));
+    return (skillsHub?.skills || [])
+      .filter(skill => attached.has(skill.id) || attached.has(skill.name))
+      .map(skill => skill.id);
+  }, [skillsHub, skillsOverlayTargetAgent]);
 
   const skillsOverlayPacks = useMemo((): WorkflowSkillsOverlayPack[] => (
     (skillsMarket?.packs || []).map(pack => ({
+      id: pack.id,
+      provider: pack.provider,
       packSlug: pack.packSlug || pack.slug,
+      slug: pack.slug,
       name: pack.name,
       description: pack.description,
       category: pack.category,
       skillCount: pack.skillCount,
+      installCount: pack.installCount,
       installed: pack.installed,
       installable: pack.installable,
     }))
@@ -8526,9 +8540,16 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
       id: group.id,
       label: group.label,
       category: group.kind,
-      skillCount: group.skillIds.length,
+      skillCount: capabilityHubSearch.trim()
+        ? group.skillIds.filter(skillId => skillsOverlaySkills.some(skill => skill.id === skillId)).length
+        : group.skillIds.length,
     }))
-  ), [skillsHub]);
+  ), [capabilityHubSearch, skillsHub, skillsOverlaySkills]);
+
+  const handleSkillsOverlayAttachSkill = useCallback((skillId: string) => {
+    const skill = (skillsHub?.skills || []).find(item => item.id === skillId);
+    if (skill) void attachSkillToTargetAgent(skill);
+  }, [attachSkillToTargetAgent, skillsHub]);
 
   const canvasNodesRef = useRef(canvasNodes);
   canvasNodesRef.current = canvasNodes;
@@ -8591,12 +8612,6 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
     }
   }, [alertToast, applyNodeConfigUpdate, canvasNodeById, canvasNodes, skillsOverlayGroupNode, t]);
 
-  const handleSkillsOverlayInstallPack = useCallback(async (packSlug: string) => {
-    const pack = (skillsMarket?.packs || []).find(item => (item.packSlug || item.slug) === packSlug);
-    if (!pack) return;
-    await installSkillsPackFromMarket(pack);
-  }, [installSkillsPackFromMarket, skillsMarket]);
-
   const handleSkillsOverlayPickGroup = useCallback(async (groupId: string) => {
     const existing = canvasNodes.find(node => (
       isCapabilityNode(node)
@@ -8609,7 +8624,11 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
     }
     const group = (skillsHub?.groups || []).find(item => item.id === groupId);
     if (!group) return;
-    await createSkillGroupNode(group);
+    const visibleSkillIds = new Set(skillsOverlaySkills.map(skill => skill.id));
+    const groupToCreate = capabilityHubSearch.trim()
+      ? { ...group, skillIds: group.skillIds.filter(skillId => visibleSkillIds.has(skillId)) }
+      : group;
+    await createSkillGroupNode(groupToCreate);
     for (let attempt = 0; attempt < 20; attempt += 1) {
       await new Promise(resolve => window.setTimeout(resolve, 50));
       const created = canvasNodesRef.current.find(node => (
@@ -8622,14 +8641,13 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
         return;
       }
     }
-  }, [canvasNodes, createSkillGroupNode, skillsHub]);
+  }, [canvasNodes, capabilityHubSearch, createSkillGroupNode, skillsHub, skillsOverlaySkills]);
 
-  // When the big Skills Hub overlay opens, back it with the same hub/market
-  // payloads the legacy drawer uses. Group mode only needs capability-node
-  // state (already in the snapshot), so the market fetch is hub-mode only.
+  // When the big Skills Hub overlay opens, load the same hub payload used by
+  // the capability surface. Group mode only needs capability-node state.
   // The ref guard (not the loading states) dedupes fetches so a loading-state
   // change cannot re-run this effect and cancel the in-flight request.
-  const skillsOverlayFetchStateRef = useRef<{ hub: 'idle' | 'loading' | 'done'; market: 'idle' | 'loading' | 'done' }>({ hub: 'idle', market: 'idle' });
+  const skillsOverlayFetchStateRef = useRef<{ hub: 'idle' | 'loading' | 'done' }>({ hub: 'idle' });
   useEffect(() => {
     if (!skillsOverlay.open) return;
     let cancelled = false;
@@ -8652,34 +8670,11 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
         })
         .finally(() => { if (!cancelled) setSkillsHubLoading(false); });
     }
-    if (skillsOverlay.mode === 'hub' && fetchState.market === 'idle') {
-      fetchState.market = 'loading';
-      setSkillsMarketLoading(true);
-      setSkillsMarketError('');
-      fetchSkillsMarket(capabilityHubSearch)
-        .then(result => {
-          if (cancelled) return;
-          setSkillsMarket(result);
-          fetchState.market = 'done';
-          const defaultTarget = result.installTargets.find(target => target.default)?.id
-            || result.installTargets[0]?.id
-            || 'project-agents';
-          setSkillsMarketInstallTarget(current => result.installTargets.some(target => target.id === current) ? current : defaultTarget);
-        })
-        .catch((e: any) => {
-          if (cancelled) return;
-          setSkillsMarket(null);
-          setSkillsMarketError(e?.message || t('Failed to load Skills Market'));
-          fetchState.market = 'idle';
-        })
-        .finally(() => { if (!cancelled) setSkillsMarketLoading(false); });
-    }
     return () => {
       cancelled = true;
       // If the overlay closed mid-fetch, allow a future open to retry.
       const fetchState = skillsOverlayFetchStateRef.current;
       if (fetchState.hub === 'loading') fetchState.hub = 'idle';
-      if (fetchState.market === 'loading') fetchState.market = 'idle';
     };
   }, [capabilityHubSearch, skillsOverlay.mode, skillsOverlay.open, t]);
 
@@ -9125,7 +9120,9 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
                 {bindTask && (
                   <select value={taskId} onChange={e => setTaskId(e.target.value)}
                     style={{ padding: '7px 8px', border: '1px solid var(--border)', borderRadius: 'var(--radius)' }}>
-                    {tasks.map(task => <option key={task.taskId} value={task.taskId}>{task.taskId}</option>)}
+                    {bindableTasks.length === 0
+                      ? <option value="">No compatible tasks</option>
+                      : bindableTasks.map(task => <option key={task.taskId} value={task.taskId}>{task.taskId}</option>)}
                   </select>
                 )}
                 <button data-testid="workflow-create-agent-submit" onClick={createAgentNode} disabled={!currentRuntime || launchingAgent}
@@ -9456,7 +9453,8 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
 
       </ReactFlow>
 
-        {showConfig && selectedNode?.kind === 'terminal-session' && selectedNode.sessionId && (!selectedRuntimeNode || selectedRuntimeNode.kind === 'agent') && (
+        {showConfig && selectedNode?.kind === 'terminal-session' && selectedNode.sessionId
+          && (selectedRuntimeNode?.kind === 'agent' || (!selectedRuntimeNode && selectedRuntimeLoading)) && (
           <div data-canvas-control="true" className="workflow-node-settings-overlay workflow-node-settings-panel-host workflow-component-settings-panel-host nodrag nopan">
             <AgentNodeSettings
               node={(selectedRuntimeNode?.kind === 'agent' ? selectedRuntimeNode : null) || (agentSettingsPreviewNode as WorkflowRuntimeNode)}
@@ -9467,7 +9465,7 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
           </div>
         )}
 
-        {showConfig && selectedNode?.kind === 'terminal-session' && selectedNode.sessionId && selectedRuntimeNode && selectedRuntimeNode.kind !== 'agent' && (
+        {showConfig && selectedSessionUsesLegacySettings && (
           <div data-canvas-control="true" className="workflow-node-settings-overlay workflow-node-settings-panel-host nodrag nopan">
             <WorkflowNodeSettingsPanel
               node={selectedNode}
@@ -9492,7 +9490,8 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
           </div>
         )}
 
-        {showConfig && selectedNode && selectedRuntimeNode && selectedRuntimeNode.kind !== 'agent' && SelectedRuntimeSettings && (
+        {showConfig && selectedNode && selectedRuntimeNode && selectedRuntimeNode.kind !== 'agent'
+          && SelectedRuntimeSettings && (
           <div data-canvas-control="true" className="workflow-node-settings-overlay workflow-node-settings-panel-host workflow-component-settings-panel-host nodrag nopan">
             <SelectedRuntimeSettings
               node={selectedRuntimeNode}
@@ -9808,11 +9807,16 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
           open={skillsOverlay.open}
           hidden={skillsDragHideActive}
           mode={skillsOverlay.mode}
+          targetAgentId={skillsOverlay.targetAgentId}
           group={skillsOverlayGroup}
           hub={skillsOverlayHub}
           agents={skillsOverlayAgents}
           skills={skillsOverlaySkills}
+          search={capabilityHubSearch}
+          onSearchChange={setCapabilityHubSearch}
           packs={skillsOverlayPacks}
+          attachedSkillIds={skillsOverlayAttachedSkillIds}
+          installTargets={(skillsMarket?.installTargets || skillsHub?.installTargets || []).map(target => target.id)}
           groups={skillsOverlayGroups}
           onClose={() => {
             // Explicit close: unmount and clear the draft (existing behavior).
@@ -9820,8 +9824,19 @@ function WorkflowRouteInner({ onSelectSession }: Props) {
             setSkillsOverlay(current => (current.open ? { open: false, mode: current.mode } : current));
           }}
           onSetSkillEnabled={skillsOverlay.mode === 'group' ? handleSkillsOverlaySetSkillEnabled : undefined}
+          onAttachSkillToAgent={skillsOverlay.mode === 'hub' && skillsOverlayTargetAgent ? handleSkillsOverlayAttachSkill : undefined}
           onAttachToAgent={handleSkillsOverlayAttachToAgent}
-          onInstallPack={handleSkillsOverlayInstallPack}
+          onInstallPack={(pack, targetScope) => installSkillsPackFromMarket({
+            ...pack,
+            id: pack.id || pack.packSlug,
+            provider: pack.provider || 'skillstore',
+            slug: pack.slug || pack.packSlug,
+            name: pack.name || pack.packSlug,
+            description: pack.description || '',
+            skillCount: pack.skillCount || 0,
+            installed: pack.installed === true,
+            installable: pack.installable !== false,
+          }, targetScope)}
           onPickGroup={handleSkillsOverlayPickGroup}
           onDraftDragStart={() => {
             // Hide (don't close) the overlay so the composed-skill drag can

@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "question": "Is claim A about framework F true?",
+  "mode": "verify",
+  "depth": "standard",
+  "checkedAt": "2026-09-13T13:30:00.000Z",
+  "constraints": {},
+  "operations": [
+    { "id": "op-r1", "kind": "read", "tool": "webfetch", "url": "https://a.example/f", "outcome": "success", "checkedAt": "2026-09-13T13:30:10.000Z" },
+    { "id": "op-r2", "kind": "read", "tool": "webfetch", "url": "https://b.example/f-critique", "outcome": "success", "checkedAt": "2026-09-13T13:30:20.000Z" }
+  ],
+  "sources": [
+    {
+      "id": "src-a",
+      "url": "https://a.example/f",
+      "title": "Framework F docs",
+      "sourceType": "official",
+      "publishedAt": "2026-06-01T00:00:00.000Z",
+      "retrievedAt": "2026-09-13T13:30:10.000Z",
+      "access": "full",
+      "excerpt": "Framework F provides the feature.",
+      "locator": "#feature",
+      "originGroup": null,
+      "operationIds": ["op-r1"]
+    },
+    {
+      "id": "src-b",
+      "url": "https://b.example/f-critique",
+      "title": "Critique of framework F",
+      "sourceType": "community",
+      "publishedAt": "2026-08-01T00:00:00.000Z",
+      "retrievedAt": "2026-09-13T13:30:20.000Z",
+      "access": "excerpt",
+      "excerpt": "The feature regressed in the latest release.",
+      "locator": null,
+      "originGroup": null,
+      "operationIds": ["op-r2"]
+    }
+  ],
+  "claims": [
+    {
+      "id": "claim-1",
+      "text": "Framework F provides the feature.",
+      "kind": "fact",
+      "importance": "major",
+      "supportIds": ["src-a"],
+      "contradictionIds": ["src-b"],
+      "dependsOnClaimIds": [],
+      "status": "disputed",
+      "confidence": "low",
+      "confidenceReason": "An unexplained major contradiction exists.",
+      "gaps": ["Contradiction not resolved."]
+    }
+  ],
+  "status": "incomplete",
+  "stopReason": "Major contradiction unresolved.",
+  "limitations": ["Disputed outcome is a legal report when status is incomplete."]
+}

@@ -1,7 +1,8 @@
 import crypto from 'node:crypto'
 import { ComponentNodeError } from '../component-node-store.mjs'
 import { loadWorkflowGraphMap, removeWorkflowGraphNode } from '../a2a-store.mjs'
-import { listBridgeMessages, listBridgeMessagesForSession, recordBridgeMessage } from '../bridge-store.mjs'
+import { acknowledgeBridgeMessages, listBridgeMessages, listBridgeMessagesForSession, recordBridgeMessage } from '../bridge-store.mjs'
+import { compositionIdFor, listCompositionTransitions, recordCompositionTransition } from '../composition-api.mjs'
 import { appendSessionEvent, appendTerminalData } from '../terminal-store.mjs'
 
 async function getWsTerminal() {
@@ -336,12 +337,36 @@ async function deliverAgentMessage(projectRoot, {
     deliveryMode: envelope.deliveryMode,
     topic: envelope.topic,
   })
+  const deliveryKey = String(envelope.messageId || bridgeMessage?.bridgeId || '').trim()
+  const alreadyAudited = deliveryKey && listCompositionTransitions(projectRoot)
+    .some(item => item.cause === 'agent.delivery'
+      && item.messageId === deliveryKey
+      && item.targetNodeId === targetNodeId)
+  const transition = alreadyAudited
+    ? null
+    : recordCompositionTransition(projectRoot, {
+      compositionId: compositionIdFor(projectRoot),
+      from: 'queued',
+      to: 'delivered',
+      cause: 'agent.delivery',
+      messageId: deliveryKey || null,
+      eventId: envelope.eventId || null,
+      wakeupId: envelope.wakeupId || null,
+      timerNodeId: envelope.timerNodeId || null,
+      targetNodeId,
+      edgeId: envelope.edgeId || null,
+      graphVersion: Number(envelope.graphVersion || 1),
+      stateRevision: Number(envelope.stateRevision || 0),
+      deliveryMode: envelope.deliveryMode || 'direct',
+      contextRefs: [],
+    })
   return {
     ok: true,
     code: 'DELIVERED',
     messageId: envelope.messageId,
     bridgeId: bridgeMessage?.bridgeId || null,
     seq: bridgeMessage?.seq || null,
+    transition,
     fromNodeId: senderNodeId,
     toNodeId: targetNodeId,
     fromSessionId: sender.sessionId,
@@ -637,6 +662,8 @@ export function readMessages(nodeId, projectRoot, payload = {}) {
     const requestId = String(opts.requestId || '').trim()
     const threadId = String(opts.threadId || '').trim()
     const wakeup = opts.wakeup === true || opts.wakeup === 'true'
+    const afterSeq = Number(opts.afterSeq)
+    const bridgeId = String(opts.bridgeId || '').trim()
     const peerKey = String(opts.peer || opts.to || opts.from || opts.target || opts.node || '').trim()
     const limit = Number(opts.limit || opts.tail || 200)
     const senderNodeId = graphNodeId(sender)
@@ -644,10 +671,57 @@ export function readMessages(nodeId, projectRoot, payload = {}) {
     // New filters (spec 5, 6.1): requestId aggregation and wakeup reads.
     if (requestId || wakeup) {
       if (wakeup) {
+        const ackRequested = opts.ack === true || opts.ack === 'true'
+        const consumedThroughSeq = Number(opts.consumedThroughSeq ?? opts.consumedSeq)
+        const consumedThroughByBridge = opts.consumedThroughByBridge
+          && typeof opts.consumedThroughByBridge === 'object'
+          && !Array.isArray(opts.consumedThroughByBridge)
+          ? opts.consumedThroughByBridge
+          : (bridgeId && Number.isFinite(consumedThroughSeq) ? { [bridgeId]: consumedThroughSeq } : null)
+        const pendingForAck = ackRequested && (Number.isFinite(consumedThroughSeq) || consumedThroughByBridge)
+          ? listBridgeMessagesForSession(projectRoot, sender.sessionId, {
+            deliveryMode: 'wakeup',
+            bridgeId,
+            limit: 1000,
+            includeConsumed: true,
+          }).entries.filter((entry) => {
+            const bridgeId = String(entry?.bridgeId || '').trim()
+            const bridgeSeq = consumedThroughByBridge?.[bridgeId]
+            const requested = bridgeSeq !== undefined ? Number(bridgeSeq) : consumedThroughSeq
+            return Number.isFinite(requested) && Number(entry?.seq || 0) <= requested
+          })
+          : []
+        const acknowledgement = ackRequested
+          ? acknowledgeBridgeMessages(projectRoot, sender.sessionId, consumedThroughSeq, consumedThroughByBridge)
+          : null
         const result = listBridgeMessagesForSession(projectRoot, sender.sessionId, {
           deliveryMode: 'wakeup',
+          bridgeId,
+          afterSeq: Number.isFinite(afterSeq) ? afterSeq : null,
+          afterSeqByBridge: opts.afterSeqByBridge,
           limit,
         })
+        let consumedTransition = null
+        if (acknowledgement?.consumedCount > 0) {
+          const entry = pendingForAck[0]
+          let envelope = {}
+          try { envelope = JSON.parse(String(entry?.data || '{}')) } catch { /* legacy bridge payload */ }
+          consumedTransition = recordCompositionTransition(projectRoot, {
+            compositionId: compositionIdFor(projectRoot),
+            from: 'delivered',
+            to: 'consumed',
+            cause: 'agent.readMessages.ack',
+            eventId: envelope.eventId || null,
+            wakeupId: envelope.wakeupId || envelope.messageId || entry?.messageId || null,
+            timerNodeId: envelope.timerNodeId || entry?.fromNodeId || null,
+            targetNodeId: senderNodeId,
+            edgeId: null,
+            graphVersion: Number(envelope.graphVersion || 1),
+            stateRevision: Number(envelope.stateRevision || 0),
+            consumedThroughSeq: acknowledgement.consumedThroughSeq,
+            contextRefs: [],
+          })
+        }
         return {
           ok: true,
           mode: 'wakeup',
@@ -655,6 +729,8 @@ export function readMessages(nodeId, projectRoot, payload = {}) {
           fromSessionId: sender.sessionId,
           entries: result.entries,
           count: result.entries.length,
+          ...(acknowledgement ? acknowledgement : {}),
+          ...(consumedTransition ? { transition: consumedTransition } : {}),
         }
       }
       // Aggregate all replies in one request thread across peers (AC-010).

@@ -1,12 +1,13 @@
 {
   "schemaVersion": 1,
-  "generator": "0.8.21",
+  "generator": "0.9.3",
   "source": "https://raw.githubusercontent.com/LiWeny16/create-harness-vibe-coding/main/templates/common/",
-  "generated": "2026-08-28T04:18:59.552Z",
+  "generated": "2026-09-13T11:50:39.650Z",
   "preserve": [
     "Harness/PROGRESS.md",
     "Harness/tasks/**",
     "Harness/memory/**",
+    "Harness/research/search/**",
     "Harness/research/PRD.md",
     "Harness/research/research-results.md",
     "Harness/architecture.md",
@@ -242,6 +243,46 @@
       "overwrite": "safe"
     },
     {
+      "path": ".agents/skills/wf-search/SKILL.md",
+      "kind": "skill",
+      "overwrite": "safe"
+    },
+    {
+      "path": ".agents/skills/wf-search/references/evidence-contract.md",
+      "kind": "config",
+      "overwrite": "safe"
+    },
+    {
+      "path": ".agents/skills/wf-search/references/policies/compare.md",
+      "kind": "config",
+      "overwrite": "safe"
+    },
+    {
+      "path": ".agents/skills/wf-search/references/policies/fact.md",
+      "kind": "config",
+      "overwrite": "safe"
+    },
+    {
+      "path": ".agents/skills/wf-search/references/policies/troubleshoot.md",
+      "kind": "config",
+      "overwrite": "safe"
+    },
+    {
+      "path": ".agents/skills/wf-search/references/policies/verify.md",
+      "kind": "config",
+      "overwrite": "safe"
+    },
+    {
+      "path": ".agents/skills/wf-search/references/source-routing.md",
+      "kind": "config",
+      "overwrite": "safe"
+    },
+    {
+      "path": ".agents/skills/wf-search/references/tool-adapters.md",
+      "kind": "config",
+      "overwrite": "safe"
+    },
+    {
       "path": ".agents/skills/wf-task-archive/SKILL.md",
       "kind": "skill",
       "overwrite": "safe"
@@ -422,6 +463,11 @@
       "overwrite": "safe"
     },
     {
+      "path": ".claude/commands/wf-search.md",
+      "kind": "command",
+      "overwrite": "safe"
+    },
+    {
       "path": ".claude/commands/wf-task-archive.md",
       "kind": "command",
       "overwrite": "safe"
@@ -534,6 +580,46 @@
     {
       "path": ".claude/skills/wf-review/SKILL.md",
       "kind": "skill",
+      "overwrite": "safe"
+    },
+    {
+      "path": ".claude/skills/wf-search/SKILL.md",
+      "kind": "skill",
+      "overwrite": "safe"
+    },
+    {
+      "path": ".claude/skills/wf-search/references/evidence-contract.md",
+      "kind": "config",
+      "overwrite": "safe"
+    },
+    {
+      "path": ".claude/skills/wf-search/references/policies/compare.md",
+      "kind": "config",
+      "overwrite": "safe"
+    },
+    {
+      "path": ".claude/skills/wf-search/references/policies/fact.md",
+      "kind": "config",
+      "overwrite": "safe"
+    },
+    {
+      "path": ".claude/skills/wf-search/references/policies/troubleshoot.md",
+      "kind": "config",
+      "overwrite": "safe"
+    },
+    {
+      "path": ".claude/skills/wf-search/references/policies/verify.md",
+      "kind": "config",
+      "overwrite": "safe"
+    },
+    {
+      "path": ".claude/skills/wf-search/references/source-routing.md",
+      "kind": "config",
+      "overwrite": "safe"
+    },
+    {
+      "path": ".claude/skills/wf-search/references/tool-adapters.md",
+      "kind": "config",
       "overwrite": "safe"
     },
     {
@@ -727,6 +813,11 @@
       "overwrite": "safe"
     },
     {
+      "path": ".opencode/commands/wf-search.md",
+      "kind": "command",
+      "overwrite": "safe"
+    },
+    {
       "path": ".opencode/commands/wf-task-archive.md",
       "kind": "command",
       "overwrite": "safe"
@@ -897,12 +988,52 @@
       "overwrite": "safe"
     },
     {
+      "path": "Harness/scripts/lib/memory-context.mjs",
+      "kind": "script",
+      "overwrite": "safe"
+    },
+    {
+      "path": "Harness/scripts/lib/path-scope.mjs",
+      "kind": "script",
+      "overwrite": "safe"
+    },
+    {
+      "path": "Harness/scripts/lib/research-policy.mjs",
+      "kind": "script",
+      "overwrite": "safe"
+    },
+    {
+      "path": "Harness/scripts/lib/wf-search.mjs",
+      "kind": "script",
+      "overwrite": "safe"
+    },
+    {
+      "path": "Harness/scripts/memory-context.mjs",
+      "kind": "script",
+      "overwrite": "safe"
+    },
+    {
+      "path": "Harness/scripts/research-policy.mjs",
+      "kind": "script",
+      "overwrite": "safe"
+    },
+    {
       "path": "Harness/scripts/scan-clean.mjs",
       "kind": "script",
       "overwrite": "safe"
     },
     {
       "path": "Harness/scripts/sync-host-global.mjs",
+      "kind": "script",
+      "overwrite": "safe"
+    },
+    {
+      "path": "Harness/scripts/task-context.mjs",
+      "kind": "script",
+      "overwrite": "safe"
+    },
+    {
+      "path": "Harness/scripts/task-group-index.mjs",
       "kind": "script",
       "overwrite": "safe"
     },
@@ -923,6 +1054,11 @@
     },
     {
       "path": "Harness/scripts/wf-remove.mjs",
+      "kind": "script",
+      "overwrite": "safe"
+    },
+    {
+      "path": "Harness/scripts/wf-search.mjs",
       "kind": "script",
       "overwrite": "safe"
     },

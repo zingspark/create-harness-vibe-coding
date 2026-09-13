@@ -12,8 +12,22 @@ const NAV = [
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
 
-type ProjectInfo = { root?: string; taskCount?: number };
-type WorkflowInfo = { taskId?: string | null; phase?: string | null; gate?: string | null };
+type ProjectInfo = {
+  root?: string;
+  taskCount?: number;
+  activeTaskId?: string | null;
+  wfManaged?: boolean;
+  resumeRequired?: boolean;
+  projects?: string[];
+};
+type WorkflowInfo = {
+  taskId?: string | null;
+  phase?: string | null;
+  gate?: string | null;
+  wfManaged?: boolean;
+  resumeRequired?: boolean;
+  taskProject?: string | null;
+};
 
 function basename(value: string | undefined, t: (key: string) => string) {
   if (!value) return t('project');
@@ -28,7 +42,7 @@ export default function Header() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.allSettled([
+    const load = () => Promise.allSettled([
       apiJsonCached<ProjectInfo>('/api/project', { ttlMs: 30000 }),
       apiJsonCached<WorkflowInfo>('/api/workflow', { ttlMs: 2000 }),
     ]).then(([projectResult, workflowResult]) => {
@@ -36,10 +50,18 @@ export default function Header() {
       if (projectResult.status === 'fulfilled') setProject(projectResult.value);
       if (workflowResult.status === 'fulfilled') setWorkflow(workflowResult.value);
     });
-    return () => { cancelled = true; };
+    load();
+    const onStateChanged = () => { void load(); };
+    window.addEventListener('harness:graph-changed', onStateChanged);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('harness:graph-changed', onStateChanged);
+    };
   }, []);
 
-  const activeMeta = [workflow?.taskId, workflow?.phase, workflow?.gate].filter(Boolean).join(' / ');
+  const activeMeta = workflow?.wfManaged
+    ? [workflow.taskProject, workflow.taskId, workflow.phase, workflow.gate, workflow.resumeRequired ? '↻' : null].filter(Boolean).join(' / ')
+    : null;
 
   return (
     <header

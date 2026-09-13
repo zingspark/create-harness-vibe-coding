@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
@@ -90,6 +91,15 @@ const COMMAND_REGISTRY = [
       { flag: 'mode', value: '<workflowMode>', description: 'workflow mode (default: wf)' },
       { flag: 'subagent-mode', value: '<built-in-subagents|wf-node-subagents>', description: 'subagent mode (default: built-in-subagents; legacy alias: wf-subagents)' },
       { flag: 'model', value: '<model>', description: 'model id' },
+      { flag: 'dispatch-id', value: '<dispatchId>', description: 'opt into canonical dispatch creation (required with all dispatch fields)' },
+      { flag: 'task', value: '<taskId>', description: 'dispatch task id (required when --dispatch-id is supplied)' },
+      { flag: 'effort', value: '<low|medium|high|xhigh>', description: 'dispatch model effort (required when --dispatch-id is supplied)' },
+      { flag: 'transport', value: '<pty|chat>', description: 'dispatch transport (required when --dispatch-id is supplied)' },
+      { flag: 'context-pack-path', value: '<path>', description: 'dispatch context pack path, relative to the project root' },
+      { flag: 'context-refs', value: '<json-array>', description: 'dispatch node references as a JSON array' },
+      { flag: 'context-ref', value: '<nodeId>', description: 'dispatch node reference shorthand (one nodeId)' },
+      { flag: 'request-id', value: '<requestId>', description: 'dispatch correlation request id' },
+      { flag: 'reply-to', value: '<replyTo>', description: 'dispatch reply correlation id' },
       { flag: 'provider', value: '<provider>', description: 'model provider' },
       { flag: 'cwd', value: '<path>', description: 'working directory (default: project root)' },
       { flag: 'parent', value: '<sessionId>', description: 'parent agent session id' },
@@ -99,6 +109,54 @@ const COMMAND_REGISTRY = [
       { flag: 'token', value: '<token>', description: 'auth token' },
       { flag: 'actor-kind', value: '<kind>', description: 'actor agent kind (create-agent requires main)' },
       { flag: 'project', value: '<path>', description: 'project root (default: .)' },
+    ],
+  },
+  {
+    name: 'ensure-backend',
+    aliases: [],
+    summary: 'Start or reuse the project wf-ui backend without opening a browser.',
+    example: 'wf-ui-control.mjs ensure-backend --project . --no-open --json',
+    flags: [
+      { flag: 'project', value: '<path>', description: 'project root (default: .)' },
+      { flag: 'host', value: '<127.0.0.1>', description: 'loopback host (default: 127.0.0.1)' },
+      { flag: 'port', value: '<0-65535>', description: 'backend port (default: 0)' },
+      { flag: 'no-open', description: 'never open a browser' },
+      { flag: 'json', description: 'print one machine-readable result' },
+    ],
+  },
+  {
+    name: 'dispatch-progress',
+    aliases: [],
+    summary: 'Report explicit progress for a dispatched runtime by dispatchId.',
+    example: 'wf-ui-control.mjs dispatch-progress --dispatch-id <id> --text "Writing files"',
+    flags: [
+      { flag: 'dispatch-id', value: '<id>', description: 'dispatch identifier (or HARNESS_DISPATCH_ID)' },
+      { flag: 'text', value: '<message>', description: 'non-empty progress message' },
+      { flag: 'task', value: '<taskId>', description: 'task id (or HARNESS_PEER_TASK_ID)' },
+      { flag: 'session', value: '<sessionId>', description: 'target session id (or HARNESS_PEER_SESSION_ID)' },
+      { flag: 'request-id', value: '<id>', description: 'typed envelope requestId' },
+      { flag: 'reply-to', value: '<id>', description: 'typed envelope replyTo' },
+      { flag: 'url', value: '<url>', description: 'wf-ui backend URL (or HARNESS_WF_UI_URL)' },
+      { flag: 'token', value: '<token>', description: 'control-plane token' },
+    ],
+  },
+  {
+    name: 'dispatch-result',
+    aliases: [],
+    summary: 'Report an explicit terminal result for a dispatched runtime by dispatchId.',
+    example: 'wf-ui-control.mjs dispatch-result --dispatch-id <id> --status succeeded --result "{\\"files\\":[\\"out.txt\\"]}"',
+    flags: [
+      { flag: 'dispatch-id', value: '<id>', description: 'dispatch identifier (or HARNESS_DISPATCH_ID)' },
+      { flag: 'status', value: '<succeeded|failed|cancelled>', description: 'required terminal status' },
+      { flag: 'result', value: '<json|string>', description: 'structured result payload or text' },
+      { flag: 'payload', value: '<json|string>', description: 'alias for --result' },
+      { flag: 'output', value: '<text>', description: 'result text when --result is omitted' },
+      { flag: 'task', value: '<taskId>', description: 'task id (or HARNESS_PEER_TASK_ID)' },
+      { flag: 'session', value: '<sessionId>', description: 'target session id (or HARNESS_PEER_SESSION_ID)' },
+      { flag: 'request-id', value: '<id>', description: 'typed envelope requestId' },
+      { flag: 'reply-to', value: '<id>', description: 'typed envelope replyTo' },
+      { flag: 'url', value: '<url>', description: 'wf-ui backend URL (or HARNESS_WF_UI_URL)' },
+      { flag: 'token', value: '<token>', description: 'control-plane token' },
     ],
   },
   {
@@ -786,6 +844,9 @@ const COMMAND_DISPATCH = {
   snapshot: (projectRoot, flags) => snapshot(projectRoot, flags),
   describe: async (projectRoot, flags) => describeSnapshot(await snapshot(projectRoot, flags)),
   'create-agent': (projectRoot, flags) => createAgent(projectRoot, flags),
+  'ensure-backend': (projectRoot, flags) => ensureBackend(projectRoot, flags),
+  'dispatch-progress': (_projectRoot, flags) => dispatchReport(flags, 'progress'),
+  'dispatch-result': (_projectRoot, flags) => dispatchReport(flags, 'result'),
   'find-agent': (_projectRoot, flags) => findAgent(flags),
   'agent-role-profile': (projectRoot, flags) => agentRoleProfile(projectRoot, flags),
   'send-input': (_projectRoot, flags) => sendInput(flags),
@@ -913,6 +974,215 @@ function controlPlane(flags) {
   };
 }
 
+function parseDispatchReportValue(value, label) {
+  if (value === undefined || value === null || value === '') return null;
+  try { return JSON.parse(value); } catch {
+    if (typeof value === 'string') return value;
+    throw new Error(`${label} must be valid JSON or text.`);
+  }
+}
+
+async function dispatchReport(flags, kind) {
+  const cp = controlPlane(flags);
+  if (!cp.url) throw new Error(`Missing HARNESS_WF_UI_URL for dispatch-${kind}.`);
+  const serviceDispatchId = process.env.HARNESS_DISPATCH_ID || process.env.CLAUDE_DISPATCH_ID || '';
+  const requestedDispatchId = flags.dispatchId || flags['dispatch-id'] || '';
+  if (serviceDispatchId && requestedDispatchId && serviceDispatchId !== requestedDispatchId) {
+    throw new Error('The dispatch id does not match the service-injected worker identity.');
+  }
+  const dispatchId = serviceDispatchId || requestedDispatchId;
+  if (!dispatchId) throw new Error(`Missing --dispatch-id <id> or HARNESS_DISPATCH_ID for dispatch-${kind}.`);
+  const serviceTaskId = process.env.HARNESS_PEER_TASK_ID || process.env.CLAUDE_PEER_TASK_ID || '';
+  const requestedTaskId = flags.task || flags.taskId || flags['task-id'] || '';
+  const taskId = serviceTaskId || requestedTaskId;
+  const serviceSessionId = process.env.HARNESS_PEER_SESSION_ID || '';
+  const requestedSessionId = flags.session || flags.sessionId || flags['session-id'] || '';
+  if (serviceSessionId && requestedSessionId && serviceSessionId !== requestedSessionId) {
+    throw new Error('The session id does not match the service-injected worker identity.');
+  }
+  const sessionId = serviceSessionId || requestedSessionId;
+  const serviceRequestId = process.env.HARNESS_DISPATCH_REQUEST_ID || '';
+  const requestedRequestId = flags.requestId || flags['request-id'] || '';
+  if (serviceRequestId && requestedRequestId && serviceRequestId !== requestedRequestId) {
+    throw new Error('The request id does not match the canonical dispatch envelope.');
+  }
+  const requestId = serviceRequestId || requestedRequestId;
+  const serviceReplyTo = process.env.HARNESS_DISPATCH_REPLY_TO || '';
+  const requestedReplyTo = flags.replyTo || flags['reply-to'] || '';
+  if (serviceReplyTo && requestedReplyTo && serviceReplyTo !== requestedReplyTo) {
+    throw new Error('The replyTo id does not match the canonical dispatch envelope.');
+  }
+  const replyTo = serviceReplyTo || requestedReplyTo;
+  const body = {
+    dispatchId,
+    ...(taskId ? { taskId } : {}),
+    ...(sessionId ? { sessionId } : {}),
+    ...(requestId ? { requestId } : {}),
+    ...(replyTo ? { replyTo } : {}),
+  };
+  let route;
+  if (kind === 'progress') {
+    const progress = flags.text || flags.message || flags.progress || '';
+    if (!String(progress).trim()) throw new Error('dispatch-progress requires --text "...".');
+    route = 'progress';
+    body.progress = String(progress);
+  } else {
+    const status = String(flags.status || '').trim();
+    if (!status) throw new Error('dispatch-result requires explicit --status <succeeded|failed|cancelled>.');
+    route = 'result';
+    body.status = status;
+    const rawResult = flags.result !== undefined
+      ? flags.result
+      : (flags.output !== undefined ? flags.output : flags.payload);
+    if (rawResult !== undefined) {
+      body.result = flags.result !== undefined || flags.payload !== undefined
+        ? parseDispatchReportValue(rawResult, '--result')
+        : String(rawResult);
+    }
+  }
+  return apiJson(cp.url, cp.token || cp.readToken, `/api/dispatches/${encodeURIComponent(dispatchId)}/${route}`, {
+    method: 'POST',
+    body,
+    actorSessionId: sessionId,
+    actorNodeId: process.env.HARNESS_WORKFLOW_NODE_ID || '',
+    actorType: sessionId || process.env.HARNESS_WORKFLOW_NODE_ID ? 'agent' : '',
+    actorKind: process.env.HARNESS_AGENT_KIND || '',
+    workerCapability: process.env.HARNESS_WORKER_CAPABILITY || '',
+  });
+}
+
+function backendEnsurePaths(projectRoot) {
+  const dir = path.join(projectRoot, 'Harness', '.temp', 'wf-ui-ensure');
+  return {
+    dir,
+    state: path.join(dir, 'backend.json'),
+    lock: path.join(dir, 'backend.lock'),
+    ready: path.join(dir, 'ready.json'),
+  };
+}
+
+function ensureProcessAlive(pid) {
+  const numeric = Number(pid);
+  if (!Number.isInteger(numeric) || numeric <= 0) return false;
+  try { process.kill(numeric, 0); return true; } catch { return false; }
+}
+
+async function backendHealthy(record) {
+  if (!record?.url || !ensureProcessAlive(record.pid)) return false;
+  try {
+    const response = await fetch(new URL('/api/health', record.url));
+    const body = await response.json();
+    return response.ok && body?.status === 'ok' && path.resolve(String(body.projectRoot || record.projectRoot)) === record.projectRoot;
+  } catch {
+    return false;
+  }
+}
+
+async function acquireBackendEnsureLock(lockPath) {
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx');
+      fs.writeFileSync(fd, `${process.pid}\n`, 'utf8');
+      return fd;
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      try {
+        const ageMs = Date.now() - fs.statSync(lockPath).mtimeMs;
+        if (ageMs > 30000) fs.rmSync(lockPath, { force: true });
+      } catch { /* another ensure may be replacing the lock */ }
+      await new Promise(resolve => setTimeout(resolve, 40));
+    }
+  }
+  throw new Error(`Timed out waiting for backend ensure lock: ${lockPath}`);
+}
+
+function releaseBackendEnsureLock(lockPath, fd) {
+  try { fs.closeSync(fd); } catch {}
+  try { fs.rmSync(lockPath, { force: true }); } catch {}
+}
+
+function runtimeEntryForEnsure() {
+  const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    process.env.HARNESS_RUNTIME_ENTRY,
+    process.env.HARNESS_RUNTIME_ROOT ? path.join(process.env.HARNESS_RUNTIME_ROOT, 'src', 'index.js') : '',
+    path.resolve(scriptDir, '..', '..', 'src', 'index.js'),
+  ].filter(Boolean).map(item => path.resolve(item));
+  return candidates.find(item => existingFile(item)) || '';
+}
+
+function runtimeLaunchForEnsure() {
+  const entry = runtimeEntryForEnsure();
+  if (entry) return { command: process.execPath, args: [entry] };
+  // A global thin bridge has no project-local src/. Use the installed package
+  // binary, which owns the package-relative src/wf-ui-server implementation.
+  const cli = 'create-harness-vibe-coding';
+  if (process.platform === 'win32') return { command: 'cmd.exe', args: ['/d', '/c', `${cli}.cmd`] };
+  return { command: cli, args: [] };
+}
+
+function waitForBackendReady(readyPath, child) {
+  const deadline = Date.now() + 15000;
+  return new Promise((resolve, reject) => {
+    let childExit = null;
+    let childError = null;
+    child.once('exit', (code, signal) => { childExit = { code, signal }; });
+    child.once('error', (error) => { childError = error; });
+    const poll = () => {
+      try {
+        if (fs.existsSync(readyPath)) {
+          const value = JSON.parse(fs.readFileSync(readyPath, 'utf8'));
+          if (value?.url && value?.pid) { resolve(value); return; }
+        }
+      } catch { /* child may still be writing the handoff */ }
+      if (childError) {
+        reject(new Error(`backend launch failed: ${childError.message}`));
+        return;
+      }
+      if (childExit) {
+        reject(new Error(`backend exited before startup (${childExit.signal || childExit.code})`));
+        return;
+      }
+      if (Date.now() >= deadline) { reject(new Error('backend did not report a URL within 15s')); return; }
+      setTimeout(poll, 60);
+    };
+    poll();
+  });
+}
+
+async function ensureBackend(projectRoot, flags) {
+  const canonicalRoot = path.resolve(projectRoot || process.cwd());
+  const host = flags.host || '127.0.0.1';
+  if (host !== '127.0.0.1') throw new Error('ensure-backend host must be 127.0.0.1');
+  const port = Number(flags.port || 0);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('ensure-backend port must be an integer from 0 to 65535');
+  const paths = backendEnsurePaths(canonicalRoot);
+  const fd = await acquireBackendEnsureLock(paths.lock);
+  try {
+    const current = readJson(paths.state, null);
+    if (await backendHealthy(current)) return { ...current, openBrowser: false };
+    const launch = runtimeLaunchForEnsure();
+    try { fs.rmSync(paths.ready, { force: true }); } catch {}
+    const child = spawn(launch.command, [...launch.args, 'wf-ui', '--project', canonicalRoot, '--host', host, '--port', String(port), '--no-open'], {
+      cwd: canonicalRoot,
+      detached: true,
+      env: { ...process.env, HARNESS_WF_UI_READY_FILE: paths.ready },
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    child.unref();
+    const started = await waitForBackendReady(paths.ready, child);
+    const result = { ok: true, url: started.url, pid: Number(started.pid), projectRoot: canonicalRoot, openBrowser: false, startedAt: started.startedAt };
+    fs.mkdirSync(paths.dir, { recursive: true });
+    fs.writeFileSync(paths.state, `${JSON.stringify(result, null, 2)}\n`, 'utf8');
+    return result;
+  } finally {
+    releaseBackendEnsureLock(paths.lock, fd);
+  }
+}
+
 function apiJson(baseUrl, token, route, {
   method = 'GET',
   body = null,
@@ -920,6 +1190,7 @@ function apiJson(baseUrl, token, route, {
   actorNodeId = '',
   actorType = '',
   actorKind = '',
+  workerCapability = '',
 } = {}) {
   return new Promise((resolve, reject) => {
     const url = new URL(route, baseUrl);
@@ -936,6 +1207,7 @@ function apiJson(baseUrl, token, route, {
         ...(actorNodeId ? { 'X-Harness-Workflow-Node-Id': actorNodeId } : {}),
         ...(actorType ? { 'X-Harness-Actor-Type': actorType } : {}),
         ...(actorKind ? { 'X-Harness-Actor-Kind': actorKind } : {}),
+        ...(workerCapability ? { 'X-Harness-Worker-Capability': workerCapability } : {}),
       },
     }, (res) => {
       let data = '';
@@ -1045,6 +1317,60 @@ async function createAgent(projectRoot, flags) {
   if (!cp.url) throw new Error('Missing HARNESS_WF_UI_URL for agent control.');
   const agentKind = flags['agent-kind'] || 'subagent';
   const runtime = flags.runtime || process.env.HARNESS_PEER_RUNTIME || 'claude';
+  const dispatchFlagKeys = [
+    'dispatchId', 'dispatch-id', 'task', 'taskId', 'task-id', 'effort', 'transport',
+    'contextPackPath', 'context-pack-path', 'contextRefs', 'context-refs',
+    'contextRef', 'context-ref', 'requestId', 'request-id', 'replyTo', 'reply-to',
+  ];
+  const hasDispatchFlag = dispatchFlagKeys.some(key => Object.prototype.hasOwnProperty.call(flags, key));
+  const dispatchId = flags.dispatchId || flags['dispatch-id'] || process.env.HARNESS_DISPATCH_ID || '';
+  const dispatchMode = Boolean(dispatchId || hasDispatchFlag);
+  let dispatchFields = null;
+  if (dispatchMode) {
+    const taskId = flags.task || flags.taskId || flags['task-id'] || '';
+    const dispatchRuntime = flags.runtime || process.env.HARNESS_PEER_RUNTIME || '';
+    const model = flags.model || '';
+    const effort = flags.effort || '';
+    const transport = flags.transport || '';
+    const missing = [
+      ['--dispatch-id', dispatchId],
+      ['--task', taskId],
+      ['--runtime', dispatchRuntime],
+      ['--model', model],
+      ['--effort', effort],
+      ['--transport', transport],
+    ].filter(([, value]) => !String(value || '').trim()).map(([name]) => name);
+    if (missing.length) {
+      throw new Error(`create-agent dispatch requires ${missing.join(', ')}.`);
+    }
+
+    const refsJson = flags.contextRefs || flags['context-refs'];
+    const refShorthand = flags.contextRef || flags['context-ref'];
+    let contextRefs;
+    if (refsJson !== undefined) {
+      try { contextRefs = JSON.parse(refsJson); } catch {
+        throw new Error('create-agent dispatch --context-refs must be a JSON array of node references.');
+      }
+      if (!Array.isArray(contextRefs)) {
+        throw new Error('create-agent dispatch --context-refs must be a JSON array of node references.');
+      }
+    } else if (refShorthand !== undefined) {
+      contextRefs = [refShorthand];
+    }
+    dispatchFields = {
+      dispatchId,
+      taskId,
+      runtime: dispatchRuntime,
+      model,
+      effort,
+      transport,
+      projectRoot,
+      ...(flags.contextPackPath || flags['context-pack-path'] ? { contextPackPath: flags.contextPackPath || flags['context-pack-path'] } : {}),
+      ...(contextRefs !== undefined ? { contextRefs } : {}),
+      ...(flags.requestId || flags['request-id'] ? { requestId: flags.requestId || flags['request-id'] } : {}),
+      ...(flags.replyTo || flags['reply-to'] ? { replyTo: flags.replyTo || flags['reply-to'] } : {}),
+    };
+  }
   const rawSubagentMode = flags['subagent-mode'] || flags.subagentMode || 'built-in-subagents';
   // Backward compat: legacy 'wf-subagents' callers resolve to the canonical
   // 'wf-node-subagents' id; unspecified defaults to built-in-subagents.
@@ -1066,6 +1392,7 @@ async function createAgent(projectRoot, flags) {
       sandboxMode: 'danger-full-access',
       approvalPolicy: 'never',
     },
+    ...(dispatchFields || {}),
   };
   if (trueFlag(flags.deferPtySpawn) || trueFlag(flags['defer-pty-spawn']) || trueFlag(flags.defer)) {
     body.deferPtySpawn = true;
@@ -2800,7 +3127,14 @@ async function main() {
     return;
   }
   const handler = COMMAND_DISPATCH[command];
-  if (handler) return print(await handler(projectRoot, flags, args));
+  if (handler) {
+    const result = await handler(projectRoot, flags, args);
+    if (command === 'ensure-backend' && trueFlag(flags.json)) {
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+      return;
+    }
+    return print(result);
+  }
   throw new Error('Usage: wf-ui-control.mjs self|snapshot|describe|create-agent|find-agent|agent-role-profile|send-input|send-key|key|delegate-agent|send-agent-message|broadcast-agent-message|read-agent-messages|read-agent|bridge-messages|browser-runs|browser-run|browser-window|browser-windows|browser-lease|browser-url|browser-allocate|browser-allocate-many|browser-open|browser-launches|browser-close|browser-wait|browser-release|browser-artifacts|browser-connections|browser-cleanup|browser-command|browser-snapshot|workflow-node-map|workflow-ontology|workflow-context|read-node|workflow-node-action|node-map|connect|delete-node|tail|manuals|manual [--project .]\nPass --help after a command for command-specific flags.');
 }
 

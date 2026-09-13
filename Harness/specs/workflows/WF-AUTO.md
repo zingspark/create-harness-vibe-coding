@@ -17,6 +17,27 @@ This fills the gap between:
 
 ## Organization Model
 
+### Context and Conditional Research
+
+Each bounded auto cycle uses a role-scoped task context pack for the controller,
+probe, and worker inputs:
+
+```text
+node Harness/scripts/task-context.mjs pack <task-id> --project <absolutePath> --role <role> --budget-bytes <n> --json
+```
+
+Checkpoint and recovery consume `show`/`pack` rather than the complete cycle
+log. External lookup begins only after:
+
+```text
+node Harness/scripts/research-policy.mjs decide --trigger <trigger> --task-type <type> --json
+```
+
+When `search: true`, record each source's URL, title, version, license, date,
+and adopt/adapt/reject rationale. Auto cycles remain reuse-first when no
+capability-gap, volatile-API, explicit-request, repeated-failure, or
+benchmark-gap trigger exists.
+
 WF-AUTO uses the same acceptance-driven mother flow per cycle. Each selected
 optimization becomes a Mini PRD with AC IDs, a test/validation plan, bounded
 implementation, independent validation, review, debug if needed, and memory.

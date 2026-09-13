@@ -67,7 +67,7 @@ After reading this README, the agent selects the path that matches the project:
 | Existing `Harness/` but missing `Harness/scripts/wf-update-check.mjs` | `npx create-harness-vibe-coding@latest my-project . -y --on-conflict skip --json`. Then run `node Harness/scripts/wf-update-check.mjs --json` |
 | After install or update | `node Harness/scripts/validate-harness.mjs --strict` |
 
-Install scope: global-first is recommended. Install once per machine with `npm i -g create-harness-vibe-coding`, then run `create-harness-vibe-coding init .` (or the `/wf-init` command) inside each project. The global runtime is the single version source of truth: commands, skills, agents, scripts, and the wf-ui server/assets live there, and every project picks up updates from it. Each project keeps only bridge docs (CLAUDE.md, AGENTS.md) and its own state (`Harness/tasks/`, `Harness/PROGRESS.md`, project memory, project facts, and project settings). Project-local installs (the table above) still work; `--install-scope global --global-dir <dir>` seeds the shared runtime manually with host copies into Claude Code, Codex, and OpenCode global directories.
+Install scope policy: the CLI defaults to `global` for a new or empty target, and to `project` for an existing non-empty target so older repositories keep their historical behavior. An explicit `--install-scope project|global` always wins. For the production setup, install once per machine with `npm i -g create-harness-vibe-coding`, then run `create-harness-vibe-coding init .` (or `/wf-init`) inside each project. The global runtime is the single version source of truth for commands, skills, agents, scripts, and the wf-ui server/assets; each project keeps its bridge docs and state (`Harness/tasks/`, `Harness/PROGRESS.md`, memory, facts, and settings). `wf-ui` is included in that same runtime and lazy-loaded only when invoked, so starting the UI does not trigger a second download. Use `--install-scope project` for a self-contained or offline/CI install; use `--global-dir <dir>` and `--host-global-dir <dir>` when the shared locations must be explicit.
 
 After installation, hand off by phase: use `CLAUDE.md` as the normal session entry, use `Harness/specs/guides/SETUP.md` only for install/bootstrap, migration, or upgrade decisions, and use `Harness/README.md` as the Harness workflow router when a routed task needs it. Preserve project boundaries; research and plan before editing; run tests, validation, and review before claiming completion.
 
@@ -83,12 +83,13 @@ When in doubt, use `/wf-help` (or `$wf-help` in Codex). It returns the full comm
 | `/wf-max <task>` | The task splits into independent work and needs maximum parallelism | Adds CEO -> Manager -> Worker roles and parallel waves to the full WF chain | `/wf-max upgrade frontend, backend, and docs in parallel` |
 | `/wf-auto` | You want continuous self-directed optimization with adaptive probe selection | Runs repeated optimization cycles with plans, evidence, and feedback | `/wf-auto improve this project's stability` |
 | `/wf-auto-spark` | You need external inspiration, competitive direction, or a long-term roadmap | Searches for sparks, anchors work to a North Star and milestones, and guards scope drift | `/wf-auto-spark explore product growth directions` |
-| `/wf-review [focus]` | You need a second opinion, peer review, or a pre-release check | Uses a peer CLI when available, otherwise an independent reviewer role, and classifies findings by severity | `/wf-review focus on security and data loss` |
-| `/wf-learn` | The same mistakes keep recurring or a completed task needs to become reusable knowledge | Consolidates context, memory, and project lessons | `/wf-learn summarize why this task needed rework` |
+| `/wf-review [focus]` | You need a second opinion, peer review, or a pre-release check | Uses clean Harness-native reviewer subagents with bounded intelligent fan-out and classifies findings by severity | `/wf-review focus on security and data loss` |
+| `/wf-learn` | The same mistakes keep recurring or a completed task needs to become reusable knowledge | Extracts generalized methods with anti-overfitting and route-load checks | `/wf-learn summarize why this task needed rework` |
 | `/wf-browser <task>` | Browser smoke tests, E2E, screenshots, forms, or UI verification | Uses a real browser and returns screenshots, traces, and evidence | `/wf-browser verify login and checkout` |
 | `/wf-ui` | Open the Harness control panel for task management, workflow graphs, agents, and settings | Directly starts the local backend and browser UI on 127.0.0.1 | `/wf-ui` |
 | `/wf-readme <task>` | README, install docs, architecture diagrams, or project docs need work | Preserves facts while improving structure, setup, and usage guidance | `/wf-readme improve the Chinese README` |
 | `/wf-update` | Harness is already installed and needs an update | Compares versions, applies safe changes, leaves semantic conflicts to the agent, and reports release highlights from the changelog metadata | `/wf-update` |
+| `/wf-search` | A task needs a real tool search with verifiable sources and claims | Organizes one search into a structured ledger (operations/sources/claims), validates it with a stateless Node helper, and renders a Markdown evidence report; reports save to `Harness/research/search/` | `/wf-search --mode fact "node:test runner exit codes"` |
 | `/wf-remove` | You need to uninstall Harness | Removes safe files, preserves user data, and asks before touching conflicts |
 | `/wf-init` | You installed the global runtime and want a new project to use it | Writes only project bridge docs and project-local state; framework files and versioning stay in the global runtime | `/wf-remove` |
 | `/wf-help` | You do not know which command to use | Returns command usage without starting a workflow | `/wf-help` |
@@ -98,6 +99,23 @@ Claude Code uses `/wf-*`; Codex uses the matching `$wf-*`; OpenCode uses the reg
 Common starting points: Web/API work starts with correctness, security, reliability, and verification; CLI/SDK work starts with contracts, compatibility, error UX, and docs; AI-agent work starts with context quality, tool safety, evaluation, and recovery; data jobs start with idempotency, failure recovery, and observability. See the full [WF-AUTO-ANGLES.md](Harness/specs/workflows/WF-AUTO-ANGLES.md) selection protocol.
 
 Chinese README: [README-CN.md](README-CN.md)
+
+### Harness intelligence routing
+
+Workflow entry points create a bounded, role-scoped task context pack before
+dispatch and regenerate it on resume. External research is conditional: the
+local policy checks capability gaps, volatile APIs, explicit requests, repeated
+failures, or benchmark gaps before an agent reads current web, GitHub, or
+Hugging Face sources. Source URL, version/terms, date, and adopt/adapt/reject
+rationale remain part of task evidence. Packs and structural checks improve
+boundaries but do not replace semantic validation.
+
+`/wf-max` uses evidence-driven WF-Max-Useful fan-out by default; a dependency
+chain, absent independent acceptance, or coordination cost without benefit may
+be recorded as no-spawn. WF-Max-Strict is enabled only by an explicit strict
+request and remains bounded by actual runtime capacity. Direct commands such as
+`/wf-help`, `/wf-task-list`, `/wf-init`, and `/wf-update` stay direct and do not
+force task routing or external research.
 
 ## Measured difference
 

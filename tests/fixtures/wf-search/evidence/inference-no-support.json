@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "question": "Which config style should this project adopt?",
+  "mode": "compare",
+  "depth": "standard",
+  "checkedAt": "2026-09-13T14:00:00.000Z",
+  "constraints": {},
+  "operations": [
+    { "id": "op-r1", "kind": "read", "tool": "webfetch", "url": "https://docs.example/config-styles", "outcome": "success", "checkedAt": "2026-09-13T14:00:10.000Z" }
+  ],
+  "sources": [
+    {
+      "id": "src-doc",
+      "url": "https://docs.example/config-styles",
+      "title": "Config style comparison",
+      "sourceType": "official",
+      "publishedAt": null,
+      "retrievedAt": "2026-09-13T14:00:10.000Z",
+      "access": "full",
+      "excerpt": "Both styles are documented.",
+      "locator": null,
+      "originGroup": null,
+      "operationIds": ["op-r1"]
+    }
+  ],
+  "claims": [
+    {
+      "id": "claim-1",
+      "text": "The flat config style reduces merge conflicts for this project.",
+      "kind": "inference",
+      "importance": "minor",
+      "supportIds": [],
+      "contradictionIds": [],
+      "dependsOnClaimIds": [],
+      "status": "supported",
+      "confidence": "medium",
+      "confidenceReason": "Fixture: inference with no supporting source ids.",
+      "gaps": []
+    }
+  ],
+  "status": "complete",
+  "stopReason": "Fixture: inference without supportIds must be rejected.",
+  "limitations": ["Fixture for WFR-EVD002."]
+}

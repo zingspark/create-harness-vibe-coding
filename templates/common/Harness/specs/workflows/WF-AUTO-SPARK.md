@@ -20,6 +20,25 @@ But perpetual search without direction = drift. The **Roadmap** is the anchor.
 
 ## Inherited Execution Chain
 
+### Context and Conditional Research
+
+Spark discovery starts from the bounded role-scoped task pack:
+
+```text
+node Harness/scripts/task-context.mjs pack <task-id> --project <absolutePath> --role <role> --budget-bytes <n> --json
+```
+
+Workers and resumed cycles consume a fresh `show`/`pack`, not the full task
+log. Before a spark search, ask:
+
+```text
+node Harness/scripts/research-policy.mjs decide --trigger <trigger> --task-type <type> --json
+```
+
+Search results must be read from the source body and recorded with URL, title,
+version, license, date, and an adopt/adapt/reject rationale. This policy keeps
+spark search conditional and does not require network access for every cycle.
+
 WF-AUTO-SPARK is a `/wf` variant layered on WF-AUTO: it inherits the WF-KERNEL contract via WF-AUTO and WF constraints, and does not define an independent heavy process. External spark search replaces discovery only; it does not replace acceptance, implementation, review, verification, reflection, or evidence.
 
 Accepted spark candidates re-enter the standard W2-W5 gates per [WF-KERNEL.md](WF-KERNEL.md): implementer (one file_claim, ≤3 files, ≤50 lines), verifier, reviewer(s), reflector. Spark searchers are read-only. Any implementation must use the dispatch packet from `Harness/specs/runtime/dispatch.md` with explicit write set, forbidden truth files, AC IDs, and verification commands. A candidate with no verifier evidence or no reflector PASS is not accepted, even if the idea is valuable.

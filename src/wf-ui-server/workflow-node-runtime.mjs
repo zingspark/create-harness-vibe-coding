@@ -64,6 +64,12 @@ import * as GoalNode from './workflow-node-types/goal-node.mjs'
 import { listMcpHub } from './workflow-mcp-hub.mjs'
 import { buildNodeOntologyContext } from './workflow-ontology.mjs'
 import {
+  compositionIdFor,
+  getIdempotentResult,
+  recordCompositionTransition,
+  rememberIdempotentResult,
+} from './composition-api.mjs'
+import {
   agentNodeId,
   buildAgentContext,
   buildAgentSnapshot,
@@ -414,6 +420,7 @@ function buildEventNodeSnapshot(node, state, settings) {
     nodeId: node.nodeId,
     kind: node.type,
     version: node.revision,
+    revision: node.revision,
     lifecycle: 'event-source',
     status: { state: 'ready', updatedAt: new Date().toISOString() },
     graph: {
@@ -1245,6 +1252,14 @@ export async function executeNodeAction(projectRoot, nodeId, action, payload = {
     const separator = actionName.indexOf('.')
     const prefix = separator === -1 ? actionName : actionName.slice(0, separator)
     const suffix = separator === -1 ? '' : actionName.slice(separator + 1)
+    if (prefix === 'timer' && payload && typeof payload === 'object' && payload.idempotencyKey) {
+      const replay = getIdempotentResult(projectRoot, {
+        nodeId,
+        action: actionName,
+        idempotencyKey: payload.idempotencyKey,
+      })
+      if (replay) return replay
+    }
     if (prefix === 'agent' && AGENT_GRAPH_ACTIONS.has(suffix)) {
       return executeAgentGraphAction(projectRoot, nodeId, actionName, suffix, payload)
     }
@@ -1282,7 +1297,14 @@ export async function executeNodeAction(projectRoot, nodeId, action, payload = {
 
     if (EVENT_NODE_TYPES.has(prefix)) {
       const current = getEventNode(projectRoot, nodeId)
+      if (prefix === 'timer' && current.node.type !== 'timer') {
+        throw new EventNodeError(`Node is not a timer node: ${current.node.nodeId}`, {
+          statusCode: 409,
+          code: 'TYPE_MISMATCH',
+        })
+      }
       let actionPayload = payload
+      let timerActor = null
       if (current.node.type === 'timer') {
         // F1/F3: timer.fire / timer.tick / timer.dispatchWakeup stay
         // backend-internal — the HTTP surface denies every actor except the
@@ -1291,12 +1313,25 @@ export async function executeNodeAction(projectRoot, nodeId, action, payload = {
         if (typeof TimerNode.isTimerControlAction === 'function' && TimerNode.isTimerControlAction(suffix)) {
           const graph = loadWorkflowGraphMap(projectRoot)
           const actor = resolveAgentActionActor(graph, payload, options, EventNodeError)
+          timerActor = actor
           actionPayload = actor.payload
           if (actor.agentAuthored && !hasTimerControlEdge(graph, actor.actorNodeId, current.node.nodeId)) {
             throw new EventNodeError('Timer control action requires a source-to-target control edge from actor to timer', {
               statusCode: 403,
               code: 'CONTROL_EDGE_REQUIRED',
             })
+          }
+        }
+        if (payload.expectedRevision !== undefined && payload.expectedRevision !== null) {
+          const expectedRevision = Number(payload.expectedRevision)
+          if (!Number.isInteger(expectedRevision) || expectedRevision !== Number(current.node.revision)) {
+            const error = new EventNodeError('Stale event node revision', {
+              statusCode: 409,
+              code: 'STALE_REVISION',
+            })
+            error.currentRevision = Number(current.node.revision)
+            error.expectedRevision = expectedRevision
+            throw error
           }
         }
       }
@@ -1309,7 +1344,61 @@ export async function executeNodeAction(projectRoot, nodeId, action, payload = {
       // Top-level `state` carries the full updated event-node state (heartbeat.base.nextDueAt etc.)
       // so the frontend can reconcile instantly from the action response, per the
       // WorkflowRuntimeNodeResponse contract. `result` remains the raw adapter result.
-      return { ok: true, action: actionName, node: snapshot, state: fresh.state, revision: fresh.node.revision, result }
+      let actionResult = result
+      let transition = result?.transition || null
+      if (current.node.type === 'timer' && suffix === 'fire' && !transition) {
+        const beforeState = current.state?.enabled && current.state?.heartbeat?.base?.enabled ? 'scheduled' : 'idle'
+        const fireTransition = recordCompositionTransition(projectRoot, {
+          compositionId: compositionIdFor(projectRoot),
+          from: beforeState,
+          to: 'fired',
+          cause: actionName,
+          eventId: result?.event?.id || null,
+          wakeupId: null,
+          timerNodeId: current.node.nodeId,
+          targetNodeId: null,
+          edgeId: null,
+          graphVersion: Number(graph.version || 1),
+          stateRevision: Number(fresh.node.revision),
+          contextRefs: [],
+        })
+        transition = fireTransition
+        actionResult = { ...(result || {}), transition: fireTransition }
+      }
+      if (current.node.type === 'timer' && TimerNode.isTimerControlAction(suffix) && !transition) {
+        const beforeState = current.state?.enabled && current.state?.heartbeat?.base?.enabled ? 'scheduled' : 'idle'
+        const afterState = fresh.state?.enabled && fresh.state?.heartbeat?.base?.enabled ? 'scheduled' : 'idle'
+        const graph = loadWorkflowGraphMap(projectRoot)
+        const controlEdge = timerActor?.actorNodeId
+          ? (graph.edges || []).find(edge => String(edge.from || edge.source || '') === timerActor.actorNodeId
+            && String(edge.to || edge.target || '') === current.node.nodeId
+            && String(edge.relation || '') === 'control')
+          : null
+        transition = recordCompositionTransition(projectRoot, {
+          compositionId: compositionIdFor(projectRoot),
+          from: beforeState,
+          to: afterState,
+          cause: actionName,
+          eventId: null,
+          wakeupId: null,
+          timerNodeId: current.node.nodeId,
+          targetNodeId: timerActor?.actorNodeId || null,
+          edgeId: controlEdge?.id || null,
+          graphVersion: Number(graph.version || 1),
+          stateRevision: Number(fresh.node.revision),
+          contextRefs: [],
+        })
+        actionResult = { ...(result || {}), transition }
+      }
+      const response = { ok: true, action: actionName, node: snapshot, state: fresh.state, revision: fresh.node.revision, result: actionResult }
+      if (current.node.type === 'timer' && payload && payload.idempotencyKey) {
+        rememberIdempotentResult(projectRoot, {
+          nodeId: current.node.nodeId,
+          action: actionName,
+          idempotencyKey: payload.idempotencyKey,
+        }, response)
+      }
+      return response
     }
 
     if (prefix === 'goal') {

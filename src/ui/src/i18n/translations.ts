@@ -19,6 +19,9 @@ const en: Translations = {
   "No active workflow": "No active workflow",
   "System theme": "System theme",
   "Harness help": "Harness help",
+  "Active focus": "Active focus",
+  "Harness-managed WF lifecycle": "Harness-managed WF lifecycle",
+  "Automatically resumes on the next session": "Automatically resumes on the next session",
 
   // Footer.tsx
   "disconnected": "disconnected",
@@ -84,6 +87,10 @@ const en: Translations = {
   "Archive completed task": "Archive completed task",
   "Close inspector": "Close inspector",
   "Continue {taskId}": "Continue {taskId}",
+  "Project": "Project",
+  "Tags": "Tags",
+  "Created": "Created",
+  "Started": "Started",
 
   // WorkflowRoute.tsx
   "Failed to load workflow": "Failed to load workflow",
@@ -376,6 +383,13 @@ const en: Translations = {
 };
 
 const zh: Translations = {
+  "Active focus": "当前焦点",
+  "Harness-managed WF lifecycle": "Harness 管理的 WF 生命周期",
+  "Automatically resumes on the next session": "下次会话自动恢复",
+  "Project": "项目",
+  "Tags": "标签",
+  "Created": "创建时间",
+  "Started": "开始时间",
   // App.tsx loading labels
   "Loading workflow canvas": "正在加载工作流画布",
   "Loading agent terminals": "正在加载代理终端",

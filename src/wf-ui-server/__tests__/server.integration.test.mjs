@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { makeHarnessTempRoot } from '../../../tests/support/temp-root.js';
 import { spawn } from 'node:child_process';
-import { startServer, stopServer, terminalReadyForInitialInput } from '../server.mjs';
+import { resolveTaskWorkflowMode, startServer, stopServer, terminalReadyForInitialInput } from '../server.mjs';
 import { SessionRegistry } from '../session-registry.mjs';
 import { createComponentNode } from '../component-node-store.mjs';
 import { appendTerminalData, listTerminalSessions, persistSession } from '../terminal-store.mjs';
@@ -200,7 +200,28 @@ test('health returns 200', async () => { const { status, body } = await fetchJso
 test('health auth via Bearer', async () => { const { status, body } = await authGet(baseUrl, token, '/api/health'); assert.equal(status, 200); assert.equal(body.status, 'ok'); });
 test('no token can access local API', async () => { const { status, body } = await fetchJson(baseUrl, undefined, '/api/tasks'); assert.equal(status, 200); assert.ok(Array.isArray(body)); });
 test('bad token is ignored for local API compatibility', async () => { const { status, body } = await fetchJson(baseUrl, 'bad-token-1234567890abcdef', '/api/tasks'); assert.equal(status, 200); assert.ok(Array.isArray(body)); });
-test('project returns root + version', async () => { const { status, body } = await fetchJson(baseUrl, token, '/api/project'); assert.equal(status, 200); assert.equal(body.root, tempRoot); assert.equal(body.version, '0.8.20'); });
+test('durable WF task binding is explicit and managed task sessions inherit their mode', () => {
+  assert.equal(resolveTaskWorkflowMode({ taskId: 'task-wf', mode: 'wf' }, ''), 'wf');
+  assert.equal(resolveTaskWorkflowMode({ taskId: 'task-direct', mode: 'direct' }, 'wf-auto'), 'wf-auto');
+  assert.throws(
+    () => resolveTaskWorkflowMode({ taskId: 'task-direct', mode: 'direct' }, 'wf', { taskId: 'task-direct' }),
+    /cannot be bound to durable WF mode/,
+  );
+  assert.throws(
+    () => resolveTaskWorkflowMode({ taskId: 'task-wf', mode: 'wf' }, 'wf-max', { taskId: 'task-wf' }),
+    /requires workflow mode "wf"/,
+  );
+});
+test('AC-004 project view returns root, task count, and durable WF resume summary', async () => {
+  const { status, body } = await fetchJson(baseUrl, token, '/api/project');
+  assert.equal(status, 200);
+  assert.equal(body.root, tempRoot);
+  assert.equal(body.version, '0.8.20');
+  assert.equal(body.activeTaskId, null);
+  assert.equal(body.wfManaged, false);
+  assert.equal(body.resumeRequired, false);
+  assert.ok(Array.isArray(body.projects));
+});
 test('tasks returns array sorted desc', async () => { const { status, body } = await fetchJson(baseUrl, token, '/api/tasks'); assert.equal(status, 200); assert.ok(body.length >= 2); assert.equal(body[0].taskId, 'task-alpha'); });
 test('tasks/:id returns single', async () => { const { status, body } = await fetchJson(baseUrl, token, '/api/tasks/task-beta'); assert.equal(status, 200); assert.equal(body.taskId, 'task-beta'); });
 test('tasks/:id missing -> 404', async () => { const { status } = await fetchJson(baseUrl, token, '/api/tasks/task-nonexist'); assert.equal(status, 404); });

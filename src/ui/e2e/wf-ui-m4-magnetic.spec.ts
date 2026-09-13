@@ -325,7 +325,7 @@ function workflowSnapshot(graphState: GraphState, components: ComponentState[], 
   };
 }
 
-async function installWorkflowFixture(page: Page): Promise<{ network: Network; graphState: GraphState; components: ComponentState[]; timerState: EventState }> {
+async function installWorkflowFixture(page: Page, options: { isolateCapsuleObstacles?: boolean; magnetDirection?: 'top' | 'right' | 'bottom' | 'left' } = {}): Promise<{ network: Network; graphState: GraphState; components: ComponentState[]; timerState: EventState }> {
   const components: ComponentState[] = [
     defaultComponentState('markdown', markdownNodeId),
     defaultComponentState('excalidraw', excalidrawNodeId),
@@ -333,6 +333,22 @@ async function installWorkflowFixture(page: Page): Promise<{ network: Network; g
   ];
   const timerState = defaultTimerState();
   const graphState = buildGraphState(components);
+  if (options.isolateCapsuleObstacles) {
+    // AC-007 direction coverage needs the dragged resource to have a clear
+    // final rectangle. Keep the other capsule roles in the fixture, but move
+    // them off the main Agent's right/bottom docking corridors; the production
+    // candidate finder intentionally rejects a snap that overlaps any other
+    // capsule node.
+    graphState.positions[workerAgentNodeId] = { x: 920, y: 520 };
+    graphState.positions[timerNodeId] = { x: 1100, y: 660 };
+    if (options.magnetDirection === 'bottom') {
+      // Keep the viewport bounds stable while taking the other resources out
+      // of the bottom corridor; the candidate finder rejects any material
+      // overlap with another resource as well as with agents/timers.
+      graphState.positions[excalidrawNodeId] = { x: 560, y: 0 };
+      graphState.positions[fileNodeId] = { x: 900, y: 0 };
+    }
+  }
   const network: Network = { graphMapRequests: [], pageErrors: [], failedResponses: [] };
 
   page.on('pageerror', error => network.pageErrors.push(error.message));
@@ -531,6 +547,86 @@ test.describe('WF UI M4 magnetic resource handles + dock guards', () => {
 
     expect(network.pageErrors, 'page errors').toEqual([]);
   });
+
+  for (const direction of ['top', 'right', 'bottom', 'left'] as const) {
+    test(`AC-007 resource snap point is exact on the ${direction} side`, async ({ page }) => {
+      const { network } = await installWorkflowFixture(page, { isolateCapsuleObstacles: true, magnetDirection: direction });
+      await openWorkflow(page);
+      await waitForCanvasSettlement(page);
+
+      const agentNode = page.locator(`[data-testid="workflow-node"][data-node-id="${mainAgentNodeId}"]`);
+      const resourceNode = page.locator(`[data-testid="workflow-component-node"][data-node-id="${markdownNodeId}"]`);
+      await expect(agentNode).toBeVisible();
+      await expect(resourceNode).toBeVisible();
+
+      const agentBox = await agentNode.boundingBox();
+      const resourceBox = await resourceNode.boundingBox();
+      expect(agentBox).not.toBeNull();
+      expect(resourceBox).not.toBeNull();
+
+      const agentCenterX = agentBox!.x + agentBox!.width / 2;
+      const agentCenterY = agentBox!.y + agentBox!.height / 2;
+      const resourceHalfWidth = resourceBox!.width / 2;
+      const resourceHalfHeight = resourceBox!.height / 2;
+      const gap = 14;
+      const dragTargetGap = 16;
+      // ReactFlow keeps the pointer's hit-point offset within the dragged
+      // card. The fixture's real component drag handle is 15px below the
+      // card's top edge, so horizontal targets must account for the card's
+      // half-height as well as that header offset to put its center on the
+      // Agent centerline.
+      const headerOffsetY = 15;
+      const targets = {
+        top: { x: agentCenterX, y: agentBox!.y - resourceHalfHeight - dragTargetGap },
+        right: { x: agentBox!.x + agentBox!.width + resourceHalfWidth + dragTargetGap, y: agentCenterY - resourceHalfHeight + headerOffsetY },
+        bottom: { x: agentCenterX, y: agentBox!.y + agentBox!.height + dragTargetGap + headerOffsetY },
+        left: { x: agentBox!.x - resourceHalfWidth - dragTargetGap, y: agentCenterY - resourceHalfHeight + headerOffsetY },
+      };
+      const target = targets[direction];
+      const startX = resourceBox!.x + resourceBox!.width / 2;
+      // The existing m4 fixture starts in the component title strip so the
+      // drag is owned by ReactFlow rather than an editor/content child.
+      const startY = resourceBox!.y + 15;
+
+      await page.mouse.move(startX, startY);
+      await page.mouse.down();
+      await page.mouse.move(startX + (target.x - startX) * 0.5, startY + (target.y - startY) * 0.5, { steps: 12 });
+      await page.mouse.move(target.x, target.y, { steps: 14 });
+      await page.waitForTimeout(120);
+      await page.mouse.up();
+
+      await expect.poll(() => network.graphMapRequests.some(req => {
+        const payload = req.payload as JsonRecord;
+        const links = Array.isArray(payload.capsuleDockLinks) ? payload.capsuleDockLinks : [];
+        return links.some((link: JsonRecord) => (
+          Array.isArray(link.nodeIds)
+            && link.nodeIds.includes(markdownNodeId)
+            && link.nodeIds.includes(mainAgentNodeId)
+            && String(link.side || '').toLowerCase() === direction
+        ));
+      })).toBe(true);
+
+      const resourceAfter = await resourceNode.boundingBox();
+      const agentAfter = await agentNode.boundingBox();
+      expect(resourceAfter).not.toBeNull();
+      expect(agentAfter).not.toBeNull();
+      const tolerance = 3;
+      if (direction === 'top') {
+        expect(Math.abs(agentAfter!.y - (resourceAfter!.y + resourceAfter!.height) - gap)).toBeLessThanOrEqual(tolerance);
+        expect(Math.abs((resourceAfter!.x + resourceAfter!.width / 2) - (agentAfter!.x + agentAfter!.width / 2))).toBeLessThanOrEqual(tolerance);
+      } else if (direction === 'right') {
+        expect(Math.abs(resourceAfter!.x - agentAfter!.x - agentAfter!.width - gap)).toBeLessThanOrEqual(tolerance);
+        expect(Math.abs((resourceAfter!.y + resourceAfter!.height / 2) - (agentAfter!.y + agentAfter!.height / 2))).toBeLessThanOrEqual(tolerance);
+      } else if (direction === 'bottom') {
+        expect(Math.abs(resourceAfter!.y - agentAfter!.y - agentAfter!.height - gap)).toBeLessThanOrEqual(tolerance);
+        expect(Math.abs((resourceAfter!.x + resourceAfter!.width / 2) - (agentAfter!.x + agentAfter!.width / 2))).toBeLessThanOrEqual(tolerance);
+      } else {
+        expect(Math.abs(agentAfter!.x - (resourceAfter!.x + resourceAfter!.width) - gap)).toBeLessThanOrEqual(tolerance);
+        expect(Math.abs((resourceAfter!.y + resourceAfter!.height / 2) - (agentAfter!.y + agentAfter!.height / 2))).toBeLessThanOrEqual(tolerance);
+      }
+      expect(network.pageErrors, 'page errors').toEqual([]);
+    });
+  }
 
   test('Timer vertical magnetic dock uses rendered bounds and does not overlap Agent', async ({ page }) => {
     const { network } = await installWorkflowFixture(page);

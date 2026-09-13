@@ -8,7 +8,7 @@ import {
 } from './a2a-store.mjs';
 import { deleteComponentNode, listLiveComponentNodes, restoreComponentNode } from './component-node-store.mjs';
 import { deleteCapabilityNode, listCapabilityNodes, restoreCapabilityNode } from './workflow-capability-node-store.mjs';
-import { deleteEventNode, listEventNodes, restoreEventNode } from './workflow-event-node-store.mjs';
+import { deleteEventNode, getEventNode, listEventNodes, restoreEventNode } from './workflow-event-node-store.mjs';
 import { listGoalNodes } from './workflow-goal-node-store.mjs';
 
 function isPlainObject(value) {
@@ -108,6 +108,73 @@ function normalizeEdgeRelation(projectRoot, graph, fromId, toId, relation) {
   if (touchesGoal && (!raw || isGoalRelationAlias(raw))) return 'goal';
   if (!raw && isAgentNodeId(graph, fromId) && isAgentNodeId(graph, toId)) return 'delegation';
   return raw || 'wf-bridge';
+}
+
+// Timer composition links are directed semantic ports, rather than generic
+// graph links. Validate before persistence so every writer (HTTP and typed
+// Agent graph actions) shares the same ontology boundary.
+function assertTimerCompositionEdge(projectRoot, graph, fromId, toId, relation, direction, sourceHandle, targetHandle) {
+  const semantic = String(relation || '').trim();
+  if (semantic !== 'event' && semantic !== 'control') return;
+  if (String(direction || '').trim() !== 'source-to-target') {
+    throw graphMapError(`${semantic} edge must use source-to-target direction`, {
+      statusCode: 400,
+      code: 'INVALID_EDGE_ONTOLOGY',
+      details: { relation: semantic, direction: direction || 'bidirectional' },
+    });
+  }
+  const eventTypes = new Map(listEventNodes(projectRoot).map(node => [node.nodeId, String(node.type || '').trim()]));
+  const fromEventType = eventTypes.get(fromId) || '';
+  const toEventType = eventTypes.get(toId) || '';
+  const fromIsTimer = fromEventType === 'timer';
+  const fromIsGithubTrigger = fromEventType === 'github-trigger';
+  const githubTriggerConfigured = fromIsGithubTrigger && (() => {
+    try {
+      return Boolean(getEventNode(projectRoot, fromId)?.state?.repository?.fullName);
+    } catch {
+      return false;
+    }
+  })();
+  const toIsTimer = toEventType === 'timer';
+  const fromIsAgent = isAgentNodeId(graph, fromId);
+  const toIsAgent = isAgentNodeId(graph, toId);
+  const source = String(sourceHandle || '').trim().toLowerCase();
+  const target = String(targetHandle || '').trim().toLowerCase();
+  if (semantic === 'event') {
+    if ((!fromIsTimer && !githubTriggerConfigured) || !toIsAgent) {
+      throw graphMapError('event edges must connect a configured Timer/GitHub Trigger -> Agent', {
+        statusCode: 400,
+        code: 'INVALID_EDGE_ONTOLOGY',
+        details: { relation: semantic, from: fromId, to: toId },
+      });
+    }
+    if (source && source !== 'event' && source !== 'event:right' && source !== 'event:top' && source !== 'event:bottom') {
+      throw graphMapError('Timer event edges require the event output handle', { statusCode: 400, code: 'INVALID_EDGE_HANDLE' });
+    }
+    // GitHub-trigger sources use the explicit event input. The generic
+    // `event` alias remains a Timer-only compatibility handle and must not let
+    // a trigger masquerade as a Timer.
+    const allowedTargets = fromIsGithubTrigger ? ['event.in'] : ['event', 'event.in', 'context', 'input'];
+    if (target && !allowedTargets.includes(target)) {
+      throw graphMapError('Timer event edges require an Agent event input handle', { statusCode: 400, code: 'INVALID_EDGE_HANDLE' });
+    }
+  } else {
+    if (!fromIsAgent || !toIsTimer) {
+      throw graphMapError('control edges must connect Agent -> Timer', {
+        statusCode: 400,
+        code: 'INVALID_EDGE_ONTOLOGY',
+        details: { relation: semantic, from: fromId, to: toId },
+      });
+    }
+    // `control` was the pre-v0.1 spelling of the Agent context port. Accept
+    // it as an input alias, but normalize it to the canonical `context`.
+    if (source && !['context', 'control', 'output', 'input'].includes(source)) {
+      throw graphMapError('Timer control edges require the Agent context handle', { statusCode: 400, code: 'INVALID_EDGE_HANDLE' });
+    }
+    if (target && target !== 'config' && target !== 'config:left') {
+      throw graphMapError('Timer control edges require the config input handle', { statusCode: 400, code: 'INVALID_EDGE_HANDLE' });
+    }
+  }
 }
 
 // ── Graph undo/redo history (P5; Harness/tasks/task-agent-control-parity/UNDO-DESIGN.md) ──
@@ -360,6 +427,7 @@ export function redoGraphOp(projectRoot, { expectedVersion } = {}) {
 export function connectNodes(projectRoot, { from, to, relation, sourceHandle, targetHandle, direction }, history = {}) {
   const graph = loadWorkflowGraphMap(projectRoot);
   const { fromId, toId } = validateEndpoints(projectRoot, graph, from, to);
+  assertTimerCompositionEdge(projectRoot, graph, fromId, toId, relation, direction, sourceHandle, targetHandle);
   const id = `${fromId}->${toId}`;
   const normalizedDirection = normalizeEdgeDirection(direction);
   const normalizedRelation = normalizeEdgeRelation(projectRoot, graph, fromId, toId, relation);
@@ -376,7 +444,9 @@ export function connectNodes(projectRoot, { from, to, relation, sourceHandle, ta
     from: fromId,
     to: toId,
     relation: normalizedRelation,
-    sourceHandle: sourceHandle ?? null,
+    sourceHandle: String(relation || '').trim() === 'control' && ['control', 'output', 'input'].includes(String(sourceHandle || '').trim().toLowerCase())
+      ? 'context'
+      : sourceHandle ?? null,
     targetHandle: targetHandle ?? null,
     direction: normalizedDirection,
   };

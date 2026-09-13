@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "question": "Unknown enum values must be rejected.",
+  "mode": "telepathic",
+  "depth": "ludicrous",
+  "checkedAt": "2026-09-13T09:10:00.000Z",
+  "constraints": {},
+  "operations": [
+    { "id": "op-s1", "kind": "photon-torque", "tool": "websearch", "query": "q", "outcome": "warp", "checkedAt": "2026-09-13T09:10:10.000Z" }
+  ],
+  "sources": [
+    {
+      "id": "src-1",
+      "url": "https://example.com/a",
+      "title": "A",
+      "sourceType": "blog",
+      "publishedAt": null,
+      "retrievedAt": "2026-09-13T09:10:20.000Z",
+      "access": "full",
+      "excerpt": "E",
+      "locator": null,
+      "originGroup": null,
+      "operationIds": ["op-s1"]
+    }
+  ],
+  "claims": [
+    {
+      "id": "claim-1",
+      "text": "Unknown enum fixture claim.",
+      "kind": "hunch",
+      "importance": "critical",
+      "supportIds": ["src-1"],
+      "contradictionIds": [],
+      "dependsOnClaimIds": [],
+      "status": "settled",
+      "confidence": "certainty",
+      "confidenceReason": "Fixture: every enum field uses an invalid value.",
+      "gaps": []
+    }
+  ],
+  "status": "complete",
+  "stopReason": "Fixture for enum errors.",
+  "limitations": []
+}

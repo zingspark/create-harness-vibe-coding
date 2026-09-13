@@ -61,6 +61,12 @@ console.log(JSON.stringify({
 `);
 }
 
+function writeStubPost(root, file, label) {
+  writeFile(root, `Harness/scripts/${file}`, `#!/usr/bin/env node
+console.log(JSON.stringify({ status: 'ok', label: ${JSON.stringify(label)}, args: process.argv.slice(2) }));
+`);
+}
+
 function copyRunner(root) {
   const source = path.resolve('Harness/scripts/wf-update-runner.mjs');
   writeFile(root, 'Harness/scripts/wf-update-runner.mjs', fs.readFileSync(source, 'utf8'));
@@ -138,4 +144,55 @@ test('runner does not auto-repair against an older remote version', () => {
   assert.equal(payload.targets[0].runs.length, 1);
   assert.equal(payload.targets[0].update.json.status, 'up-to-date');
   assert.equal(payload.targets[0].update.json.remote, '0.8.18');
+});
+
+test('AC-003 runner bounds a hung updater and returns timeout status', () => {
+  const root = tmpdir();
+  const project = path.join(root, 'project');
+  fs.mkdirSync(project, { recursive: true });
+  writeVersion(project, { generator: '0.8.20', installScope: 'project' });
+  writeFile(project, 'Harness/scripts/wf-update-check.mjs', `
+Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000);
+console.log(JSON.stringify({ status: 'up-to-date' }));
+`);
+  copyRunner(project);
+
+  const result = spawnSync(
+    process.execPath,
+    [path.join(project, 'Harness', 'scripts', 'wf-update-runner.mjs'), '--json', '--timeout-ms', '100'],
+    { cwd: project, encoding: 'utf8', timeout: 1500 },
+  );
+
+  assert.equal(result.status, 3, `${result.stdout}\n${result.stderr}`);
+  const payload = JSON.parse(result.stdout.trim());
+  assert.equal(payload.status, 'failed');
+  assert.match(payload.failures.join('\n'), /timeout/i);
+});
+
+test('AC-003 global update runs scan-clean through the same post-update contract', () => {
+  const root = tmpdir();
+  const global = path.join(root, 'global-runtime');
+  const project = path.join(root, 'plain-project');
+  fs.mkdirSync(global, { recursive: true });
+  fs.mkdirSync(project, { recursive: true });
+  writeVersion(global, { generator: '0.8.20', installScope: 'global', globalDir: global });
+  writeStubUpdater(global, 'global');
+  writeStubSync(global, 'global-sync');
+  writeStubPost(global, 'validate-harness.mjs', 'validate');
+  writeStubPost(global, 'scan-clean.mjs', 'scan-clean');
+  copyRunner(global);
+
+  const result = spawnSync(
+    process.execPath,
+    [path.join(global, 'Harness', 'scripts', 'wf-update-runner.mjs'), '--project', project, '--json', '--apply-safe'],
+    { cwd: project, encoding: 'utf8', env: { ...process.env, HARNESS_GLOBAL_HOME: global } },
+  );
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  const payload = JSON.parse(result.stdout.trim());
+  assert.deepEqual(payload.targets[0].post.map(step => step.step), [
+    'sync-host-global',
+    'validate',
+    'manifest-audit',
+    'scan-clean',
+  ]);
 });

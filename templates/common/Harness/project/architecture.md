@@ -45,6 +45,24 @@ Use interfaces and module boundaries to protect real seams in the generator, not
 - Avoid speculative abstraction: do not add plugin systems, generic runners, extra config layers, or service containers until a real second use or testability boundary exists.
 - When a boundary is real, express it with a small data contract and test it through generated output behavior.
 
+## 2.1 Intelligence Routing and Source Reuse
+
+Context and research are routing boundaries, not implicit dependencies. WF and
+WF-MAX create a role-scoped task-context pack and consult the local research
+policy only for a capability gap, volatile API, explicit request, repeated
+failure, or benchmark gap. A source is recorded with URL, checked date,
+version/terms, and an adopt/adapt/reject reason before any contract is reused;
+prose ideas do not imply copied code or a dependency.
+
+| Source | Reuse decision | Boundary |
+| --- | --- | --- |
+| [Anthropic: Building effective agents](https://www.anthropic.com/research/building-effective-agents) | Adapt composable-role and evaluator ideas | Validate against local runtime evidence; no code copied |
+| [Anthropic: Effective context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents) | Adapt finite, task-specific context budgeting | Implement as bounded packs; do not claim provider cache gains without telemetry |
+| [Anthropic: Effective harnesses for long-running agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) | Adapt resumable handoff/evaluation framing | Bind to local STATE/A2A contracts and holdout checks |
+| [OpenAI: Harness engineering](https://openai.com/index/harness-engineering/) | Adapt repository feedback-loop concepts | Process reference only; no equivalence or SOTA claim |
+| [Hugging Face: smolagents agents reference](https://huggingface.co/docs/smolagents/en/reference/agents) | Adapt bounded managed-agent/step-limit concepts | Reject Python dependency import; verify version before reuse |
+| [Hugging Face: ScreenSuite](https://huggingface.co/blog/screensuite) | Adapt hierarchical/holdout evaluation framing | Do not borrow scores or claim SOTA |
+
 ## 3. State Design
 
 State in this repo should be explicit, serializable, and owned by one layer.

@@ -4,11 +4,27 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { canonicalizeProjectPath, validateTaskId } from './security.mjs';
-import { parseTaskList, parseTaskCapsule, parseArchivedTasks, readTaskFile } from './task-parser.mjs';
+import {
+  parseTaskList,
+  parseTaskCapsule,
+  parseArchivedTasks,
+  readTaskFile,
+  readActiveTaskId,
+  OPEN_TASK_STATUSES,
+  WF_MANAGED_MODES,
+  canonicalTaskStatus,
+} from './task-parser.mjs';
 import { loadSettings } from './settings.mjs';
 import { detectRuntimesCached, getRuntimeDefinition, resolveRuntimeLaunchArgs, resolveRuntimeResumeArgs } from './runtime-detector.mjs';
+import {
+  dispatchResponse,
+  dispatchCanonicalKey,
+  dispatchFingerprint,
+  normalizeDispatchRequest,
+} from './dispatch-contract.mjs';
 import { spawnPty } from './pty-adapter.mjs';
 import { buildHarnessEnvSession } from './harness-env.mjs';
 import { createChatDriver, dispose as disposeChatDriver, sendTo as sendToChatDriver } from './chat-driver.mjs';
@@ -39,11 +55,14 @@ import {
   removeWorkflowGraphNode,
   updateWorkflowGraphSessionNode,
   writeWorkflowGraphMap,
+  withWorkflowGraphLock,
   assertSingleGoalPerGroup,
   autoConnectAgent,
   findAgents,
 } from './a2a-store.mjs';
 import { listGoalNodes } from './workflow-goal-node-store.mjs';
+import { getEventNode, listEventNodes } from './workflow-event-node-store.mjs';
+import { assertCanonicalCompositionId, buildCompositionSnapshot, compositionIdFor } from './composition-api.mjs';
 import { findAgentGraphNode, isMainAgentGraphNode } from './workflow-agent-context.mjs';
 import { createRoleProfile, nextAvailableRole, profileSessionFields, readRoleProfile } from './workflow-node-types/role-profile-store.mjs';
 // agent-node.mjs mirrors the ready-gated submit tracker for its own
@@ -55,10 +74,16 @@ import { clearTerminalState as clearAgentNodeTerminalState, markTerminalReady as
 import { readRuntimeConfig, writeRuntimeConfig } from './runtime-config.mjs';
 import { materializeClaudeTranscript, encodeClaudeProjectDir } from './claude-transcript-materializer.mjs';
 import { createSpawnGate } from './spawn-gate.mjs';
+import { createPeerCapsule, writePeerEvent, writePeerResult, updatePeerState } from './peer-capsule.mjs';
 import { autoPlaceNode, layeredTreePositions, tidyPositions, agentTreePositions, findClearPosition, nodeVisualSize } from './graph-layout.mjs';
 import { renderHtml as renderDisplayHtml } from './workflow-node-types/display-node.mjs';
 import { codexUpdatePromptInputForChoice } from './codex-update-prompt.mjs';
 import { buildCleanupSummary, pruneCleanupTargets } from './session-cleanup.mjs';
+import {
+  capabilityErrorFromProbe,
+  probeModelCapability as nativeModelCapabilityProbe,
+  MODEL_CAPABILITY_CODES,
+} from './model-capability.mjs';
 import {
   appendSessionEvent,
   appendTerminalData,
@@ -111,6 +136,7 @@ import {
 } from './workflow-graph-store.mjs';
 import { appendWorkflowOperation } from './workflow-operation-store.mjs';
 import { listSkillsHub } from './workflow-skills-hub.mjs';
+import { installSkillsMarketPack, listSkillsMarket } from './workflow-skills-market.mjs';
 import { listMcpHub } from './workflow-mcp-hub.mjs';
 import { attachEventsWs } from './ws-events.mjs';
 import { refreshBaseline, watchFileNodes } from './file-watcher.mjs';
@@ -156,10 +182,48 @@ const MIME = {
   '.woff2': 'font/woff2',
 };
 
-const SERVER_VERSION = '0.8.21';
+// Keep the server banner aligned with the package that owns this module. Read
+// the metadata through the existing filesystem imports so this remains
+// compatible with the project's supported Node versions (no JSON import
+// assertions). A malformed/missing package file must not prevent the server
+// from starting; the API reports an explicit unknown version instead.
+let SERVER_VERSION = 'unknown';
+try {
+  const packageJsonPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../package.json');
+  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+  if (typeof packageJson?.version === 'string' && packageJson.version.trim()) {
+    SERVER_VERSION = packageJson.version.trim();
+  }
+} catch {
+  // Keep startup resilient when running from an incomplete source bundle.
+}
 const EVENTS_WS_HANDLE = Symbol.for('wf-ui.eventsWsHandle');
 const FILE_WATCHER_HANDLE = Symbol.for('wf-ui.fileNodeWatcher');
 const CHAT_WS_HANDLE = Symbol.for('wf-ui.chatWsHandle');
+
+function readTaskView(projectRoot) {
+  const tasksRoot = path.join(projectRoot, 'Harness', 'tasks');
+  const activeTaskId = readActiveTaskId(projectRoot);
+  const tasks = parseTaskList(tasksRoot).map(task => ({
+    ...task,
+    isActive: task.taskId === activeTaskId,
+  }));
+  const activeTask = tasks.find(task => task.isActive && OPEN_TASK_STATUSES.has(canonicalTaskStatus(task.status))) || null;
+  const projects = [...new Set(tasks.map(task => task.project || task.group || 'default'))].sort();
+  const projectTaskCounts = Object.fromEntries(projects.map(project => [
+    project,
+    tasks.filter(task => (task.project || task.group || 'default') === project).length,
+  ]));
+  return {
+    tasks,
+    activeTaskId: activeTask?.taskId || null,
+    activeTask,
+    wfManaged: Boolean(activeTask && WF_MANAGED_MODES.has(String(activeTask.mode || '').toLowerCase())),
+    resumeRequired: Boolean(activeTask?.resumeRequired),
+    projects,
+    projectTaskCounts,
+  };
+}
 
 function workflowOperationActor(projectRoot, type = 'human') {
   try {
@@ -248,7 +312,7 @@ function workspaceFileHeaders(info, length = info.size, extra = {}) {
     'Cache-Control': 'no-cache',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, HEAD, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Harness-Session-Id, X-Harness-Actor-Type, X-Harness-Actor-Kind, X-Harness-Workflow-Node-Id, X-Harness-Node-Id, If-Match',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Harness-Session-Id, X-Harness-Actor-Type, X-Harness-Actor-Kind, X-Harness-Workflow-Node-Id, X-Harness-Node-Id, X-Harness-Worker-Capability, If-Match',
     'X-Content-Type-Options': 'nosniff',
     'Accept-Ranges': 'bytes',
     ETag: info.etag,
@@ -313,7 +377,7 @@ function sendJson(res, statusCode, data) {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, HEAD, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Harness-Session-Id, X-Harness-Actor-Type, X-Harness-Actor-Kind, X-Harness-Workflow-Node-Id, X-Harness-Node-Id, If-Match',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Harness-Session-Id, X-Harness-Actor-Type, X-Harness-Actor-Kind, X-Harness-Workflow-Node-Id, X-Harness-Node-Id, X-Harness-Worker-Capability, If-Match',
   });
   res.end(body);
 }
@@ -345,6 +409,19 @@ function sendMappedError(res, err) {
   for (const field of TYPED_ERROR_DETAIL_FIELDS) {
     const value = err?.[field];
     if (value !== undefined && value !== null) detail[field] = value;
+  }
+  if (err?.details && typeof err.details === 'object' && !Array.isArray(err.details)) {
+    const safeDetails = {};
+    for (const field of ['sourceKind', 'verificationLevel']) {
+      if (typeof err.details[field] === 'string' && err.details[field]) safeDetails[field] = err.details[field].slice(0, 120);
+    }
+    if (err.details.reason && typeof err.details.reason === 'object') {
+      const reasonCode = typeof err.details.reason.code === 'string' ? err.details.reason.code.slice(0, 100) : '';
+      const reasonMessage = typeof err.details.reason.message === 'string'
+        ? err.details.reason.message.replace(/[\r\n]/g, ' ').slice(0, 240) : '';
+      if (reasonCode || reasonMessage) safeDetails.reason = { ...(reasonCode ? { code: reasonCode } : {}), ...(reasonMessage ? { message: reasonMessage } : {}) };
+    }
+    if (Object.keys(safeDetails).length > 0) detail.capability = safeDetails;
   }
   return sendJson(res, statusCode, { error: { code, message: err?.message || 'Request failed' }, ...detail });
 }
@@ -533,6 +610,57 @@ function mergePlainObjects(base, patch) {
       : value;
   }
   return result;
+}
+
+const RUNTIME_CAPABILITIES_FIELD = 'runtimeCapabilities';
+
+function runtimeCapabilitiesError(code, message) {
+  const error = new Error(message);
+  error.statusCode = 400;
+  error.code = code;
+  return error;
+}
+
+function assertValidRuntimeCapabilities(value) {
+  if (!isPlainObject(value)) {
+    throw runtimeCapabilitiesError('RUNTIME_CAPABILITIES_INVALID', 'runtimeCapabilities must be an object managed by the project operator');
+  }
+  for (const [runtime, runtimeConfig] of Object.entries(value)) {
+    if (!getRuntimeDefinition(runtime) || !isPlainObject(runtimeConfig)) {
+      throw runtimeCapabilitiesError('RUNTIME_CAPABILITIES_INVALID', `runtimeCapabilities has an invalid runtime entry '${runtime}'`);
+    }
+    const keys = Object.keys(runtimeConfig);
+    if (keys.some(key => key !== 'models') || !isPlainObject(runtimeConfig.models)) {
+      throw runtimeCapabilitiesError('RUNTIME_CAPABILITIES_INVALID', `runtimeCapabilities.${runtime} must contain only a models object`);
+    }
+    for (const [model, declaration] of Object.entries(runtimeConfig.models)) {
+      if (!String(model).trim() || !isPlainObject(declaration)) {
+        throw runtimeCapabilitiesError('RUNTIME_CAPABILITIES_INVALID', `runtimeCapabilities.${runtime}.models must use exact model declarations`);
+      }
+      const declarationKeys = Object.keys(declaration);
+      if (declarationKeys.some(key => key !== 'supportedEfforts')) {
+        throw runtimeCapabilitiesError('RUNTIME_CAPABILITIES_INVALID', `runtimeCapabilities.${runtime}.models.${model} has an unsupported field`);
+      }
+      if (Object.hasOwn(declaration, 'supportedEfforts')
+        && (!Array.isArray(declaration.supportedEfforts)
+          || declaration.supportedEfforts.some(effort => typeof effort !== 'string' || !effort.trim()))) {
+        throw runtimeCapabilitiesError('RUNTIME_CAPABILITIES_INVALID', `runtimeCapabilities.${runtime}.models.${model}.supportedEfforts must be non-empty strings`);
+      }
+    }
+  }
+}
+
+function assertRuntimeCapabilitiesMutation(current, incoming) {
+  if (!isPlainObject(incoming) || !Object.hasOwn(incoming, RUNTIME_CAPABILITIES_FIELD)) return;
+  const requested = incoming[RUNTIME_CAPABILITIES_FIELD];
+  assertValidRuntimeCapabilities(requested);
+  const existing = current?.[RUNTIME_CAPABILITIES_FIELD];
+  if (existing === undefined || !isDeepStrictEqual(existing, requested)) {
+    throw runtimeCapabilitiesError(
+      'RUNTIME_CAPABILITIES_OPERATOR_ONLY',
+      'runtimeCapabilities is operator-managed and cannot be added or changed through HTTP settings updates',
+    );
+  }
 }
 
 function mergeSessions(memorySessions, diskSessions) {
@@ -772,7 +900,14 @@ function withResumeMetadata(session) {
   };
 }
 
-export function createServer({ projectRoot, sessionRegistry: sr, token: expectedToken, terminalHub = null, wfBrowserHub = null }) {
+export function createServer({
+  projectRoot,
+  sessionRegistry: sr,
+  token: expectedToken,
+  terminalHub = null,
+  wfBrowserHub = null,
+  modelCapabilityProbe = null,
+}) {
   const absRoot = canonicalizeProjectPath(projectRoot);
   const startTime = Date.now();
   ensureA2aDefaults(absRoot);
@@ -790,7 +925,7 @@ export function createServer({ projectRoot, sessionRegistry: sr, token: expected
       res.writeHead(204, {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET, HEAD, POST, PUT, DELETE, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Harness-Session-Id, X-Harness-Actor-Type, X-Harness-Actor-Kind, X-Harness-Workflow-Node-Id, X-Harness-Node-Id, If-Match',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Harness-Session-Id, X-Harness-Actor-Type, X-Harness-Actor-Kind, X-Harness-Workflow-Node-Id, X-Harness-Node-Id, X-Harness-Worker-Capability, If-Match',
       });
       res.end();
       return;
@@ -810,14 +945,7 @@ export function createServer({ projectRoot, sessionRegistry: sr, token: expected
 
     // ── GET /api/project ──
     if (req.method === 'GET' && pathname === '/api/project') {
-      const tasksRoot = path.join(absRoot, 'Harness', 'tasks');
-      let taskCount = 0;
-      try {
-        if (fs.existsSync(tasksRoot)) {
-          const dirs = fs.readdirSync(tasksRoot, { withFileTypes: true });
-          taskCount = dirs.filter(d => d.isDirectory() && !d.name.startsWith('_')).length;
-        }
-      } catch { /* fallback */ }
+      const taskView = readTaskView(absRoot);
       let version = 'unknown';
       try {
         const vp = path.join(absRoot, 'Harness', '.harness-version');
@@ -826,7 +954,17 @@ export function createServer({ projectRoot, sessionRegistry: sr, token: expected
           version = v.version || 'unknown';
         }
       } catch { /* fallback */ }
-      return sendJson(res, 200, { root: absRoot, version, taskCount });
+      return sendJson(res, 200, {
+        root: absRoot,
+        version,
+        taskCount: taskView.tasks.length,
+        activeTaskId: taskView.activeTaskId,
+        activeTask: taskView.activeTask,
+        wfManaged: taskView.wfManaged,
+        resumeRequired: taskView.resumeRequired,
+        projects: taskView.projects,
+        projectTaskCounts: taskView.projectTaskCounts,
+      });
     }
 
     if (req.method === 'GET' && pathname === '/api/wf-browser/capabilities') {
@@ -1209,9 +1347,7 @@ export function createServer({ projectRoot, sessionRegistry: sr, token: expected
     }
 
     if (req.method === 'GET' && pathname === '/api/tasks') {
-      const tasksRoot = path.join(absRoot, 'Harness', 'tasks');
-      const tasks = parseTaskList(tasksRoot);
-      return sendJson(res, 200, tasks);
+      return sendJson(res, 200, readTaskView(absRoot).tasks);
     }
 
     // ── GET /api/tasks/archived ──
@@ -1233,7 +1369,8 @@ export function createServer({ projectRoot, sessionRegistry: sr, token: expected
         if (capsule === null) {
           return sendError(res, 404, 'NOT_FOUND', `Task "${taskId}" not found`);
         }
-        return sendJson(res, 200, capsule);
+        const activeTaskId = readActiveTaskId(absRoot);
+        return sendJson(res, 200, { ...capsule, isActive: capsule.taskId === activeTaskId });
       } catch (err) {
         return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to read task capsule', err.message);
       }
@@ -1468,6 +1605,47 @@ export function createServer({ projectRoot, sessionRegistry: sr, token: expected
       return;
     }
 
+    if (req.method === 'GET' && pathname === '/api/workflow/skills-market') {
+      Promise.resolve().then(() => listSkillsMarket(absRoot, {
+        q: url.searchParams.get('q') || '',
+        scope: url.searchParams.get('scope') || 'project',
+        limit: url.searchParams.get('limit') || undefined,
+      }))
+        .then(data => sendJson(res, 200, data))
+        .catch(e => sendMappedError(res, e));
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/workflow/skills-market/install') {
+      readJsonBody(req)
+        .then((payload) => {
+          const installPayload = isPlainObject(payload) ? { ...payload } : {};
+          // Market list responses use a stable provider:slug id. Accepting
+          // that id keeps the UI from having to duplicate provider parsing,
+          // while still letting the market service validate the provider.
+          if (!installPayload.packSlug && installPayload.packId) {
+            const rawPackId = String(installPayload.packId);
+            const separator = rawPackId.indexOf(':');
+            if (separator > 0) {
+              installPayload.provider = installPayload.provider || rawPackId.slice(0, separator);
+              installPayload.packSlug = rawPackId.slice(separator + 1);
+            } else {
+              installPayload.packSlug = rawPackId;
+            }
+          }
+          return installSkillsMarketPack(absRoot, installPayload);
+        })
+        .then(data => sendJson(res, 200, data))
+        .catch((e) => sendJson(res, Number(e?.statusCode || 400), {
+          ok: false,
+          error: {
+            code: e?.code || 'SKILLS_MARKET_REQUEST_FAILED',
+            message: e?.message || 'Skills market request failed',
+          },
+        }));
+      return;
+    }
+
     if (req.method === 'GET' && pathname === '/api/workflow/mcp-hub') {
       Promise.resolve().then(() => listMcpHub(absRoot, {
         q: url.searchParams.get('q') || '',
@@ -1489,7 +1667,7 @@ export function createServer({ projectRoot, sessionRegistry: sr, token: expected
 
     if (req.method === 'POST' && pathname === '/api/workflow/nodes') {
       readJsonBody(req)
-        .then((payload) => {
+        .then((payload) => withWorkflowGraphLock(absRoot, () => {
           // Single-Goal rule (spec §6.2, AC-015): creating a Goal into a
           // Timer+Agent magnetic group that already has a Goal is rejected.
           // The count is candidate-inclusive (F2): a Goal surfaced into a
@@ -1500,7 +1678,7 @@ export function createServer({ projectRoot, sessionRegistry: sr, token: expected
             if (goalNodeId && assertSingleGoalOrThrowGoalBound(res, goalNodeId, { extraNodeIds: [goalNodeId] }) === null) return null;
           }
           return createWorkflowNode(absRoot, payload);
-        })
+        }))
         .then(data => {
           if (data === null) return;
           const nodeId = data?.node?.nodeId || data?.node?.id || data?.state?.nodeId;
@@ -1613,24 +1791,33 @@ export function createServer({ projectRoot, sessionRegistry: sr, token: expected
             };
           }
           if (action === 'agent.layout') {
-            return executeGraphLayoutAction(absRoot, key, payload);
+            return withWorkflowGraphLock(absRoot, () => executeGraphLayoutAction(absRoot, key, payload));
           }
           if (action === 'agent.attachDock' || action === 'agent.detachDock' || action === 'agent.setDockSide') {
-            return executeGraphDockAction(absRoot, key, action, payload);
+            return withWorkflowGraphLock(absRoot, () => executeGraphDockAction(absRoot, key, action, payload));
           }
           if (action === 'agent.updateEdge') {
-            return executeGraphEdgeUpdateAction(absRoot, key, payload);
+            return withWorkflowGraphLock(absRoot, () => executeGraphEdgeUpdateAction(absRoot, key, payload));
           }
           if (action === 'graph.undo' || action === 'graph.redo') {
-            return executeGraphHistoryAction(absRoot, key, action, payload);
+            return withWorkflowGraphLock(absRoot, () => executeGraphHistoryAction(absRoot, key, action, payload));
           }
-          return executeNodeAction(
+          const execute = () => executeNodeAction(
             absRoot,
             key,
             action,
             payload,
             workflowActionActorOptions(req, url),
-          ).then(data => {
+          );
+          const graphMutation = new Set([
+            'agent.createNode', 'agent.connectNodes', 'agent.disconnectNodes',
+            'agent.moveNode', 'agent.deleteNode', 'agent.deleteNodes',
+            'node.delete', 'node.restore',
+          ]).has(action);
+          const actionResult = graphMutation
+            ? await withWorkflowGraphLock(absRoot, execute)
+            : await execute();
+          return Promise.resolve(actionResult).then(data => {
             // L1 self-write suppression: file.writeText lands on disk through
             // applyWorkspaceOperation, so re-baseline the watcher target the
             // same way the /api/workspace/ops route does — the node action's
@@ -1685,7 +1872,7 @@ export function createServer({ projectRoot, sessionRegistry: sr, token: expected
 
     const workflowEdgeDeleteMatch = pathname.match(/^\/api\/workflow\/edges\/([^/]+)$/);
     if (req.method === 'DELETE' && workflowEdgeDeleteMatch) {
-      Promise.resolve().then(() => {
+      Promise.resolve().then(() => withWorkflowGraphLock(absRoot, () => {
           const edgeId = decodeURIComponent(workflowEdgeDeleteMatch[1]);
           const graph = getGraphSnapshot(absRoot);
           const existing = (graph.edges || []).find(edge => edge.id === edgeId);
@@ -1699,7 +1886,7 @@ export function createServer({ projectRoot, sessionRegistry: sr, token: expected
             summary: `disconnected ${edgeId}`,
           });
           return { ...data, operation };
-        })
+        }))
         .then(data => sendJson(res, 200, data))
         .catch(e => sendMappedError(res, e));
       return;
@@ -1708,6 +1895,48 @@ export function createServer({ projectRoot, sessionRegistry: sr, token: expected
     const workflowContextMatch = pathname.match(/^\/api\/workflow\/context\/([^/]+)$/);
     if (req.method === 'GET' && workflowContextMatch) {
       Promise.resolve().then(() => getNodeContext(absRoot, decodeURIComponent(workflowContextMatch[1])))
+        .then(data => sendJson(res, 200, data))
+        .catch(e => sendMappedError(res, e));
+      return;
+    }
+
+    const workflowCompositionMatch = pathname.match(/^\/api\/workflow\/compositions\/([^/]+)$/);
+    if (req.method === 'GET' && workflowCompositionMatch) {
+      Promise.resolve().then(() => {
+        const canonicalCompositionId = assertCanonicalCompositionId(
+          absRoot,
+          decodeURIComponent(workflowCompositionMatch[1]),
+        );
+        const graph = loadWorkflowGraphMap(absRoot);
+        const timers = listEventNodes(absRoot)
+          .filter(node => String(node.type || '') === 'timer')
+          .map(node => {
+            const current = getEventNode(absRoot, node.nodeId);
+            return {
+              nodeId: current.node.nodeId,
+              type: current.node.type,
+              title: current.node.title,
+              revision: current.node.revision,
+              state: current.state,
+            };
+          });
+        const agents = (graph.nodes || [])
+          .filter(node => node?.sessionId)
+          .map(node => ({
+            nodeId: node.nodeId || node.id,
+            sessionId: node.sessionId,
+            agentKind: node.agentKind || null,
+            runtime: node.runtime || null,
+            role: node.role || null,
+            status: node.status || 'stopped',
+          }));
+        return buildCompositionSnapshot(absRoot, {
+          compositionId: canonicalCompositionId,
+          graph,
+          timers,
+          agents,
+        });
+      })
         .then(data => sendJson(res, 200, data))
         .catch(e => sendMappedError(res, e));
       return;
@@ -1776,7 +2005,8 @@ export function createServer({ projectRoot, sessionRegistry: sr, token: expected
 
     const graphNodeDeleteMatch = pathname.match(/^\/api\/a2a\/(?:nodes|graph-nodes)\/([^/]+)$/);
     if (req.method === 'DELETE' && graphNodeDeleteMatch) {
-      try {
+      withWorkflowGraphLock(absRoot, () => {
+        try {
         const key = decodeURIComponent(graphNodeDeleteMatch[1]);
         const snapshot = buildWorkflowSnapshot(absRoot, sr);
         const node = (snapshot.nodes || []).find(item =>
@@ -1843,13 +2073,15 @@ export function createServer({ projectRoot, sessionRegistry: sr, token: expected
           ...result,
           snapshot: buildWorkflowSnapshot(absRoot, sr),
         });
-      } catch (e) {
-        return sendError(res, 400, 'BAD_REQUEST', e.message);
-      }
+        } catch (e) {
+          return sendMappedError(res, e);
+        }
+      }).catch(e => sendMappedError(res, e));
+      return;
     }
 
     if (req.method === 'PUT' && pathname === '/api/a2a/graph-map') {
-      readJsonBody(req).then((payload) => {
+      readJsonBody(req).then((payload) => withWorkflowGraphLock(absRoot, () => {
         try {
           sendJson(res, 200, writeWorkflowGraphMap(absRoot, payload, {
             expectedVersion: req.headers['if-match'],
@@ -1857,7 +2089,7 @@ export function createServer({ projectRoot, sessionRegistry: sr, token: expected
         } catch (e) {
           sendMappedError(res, e);
         }
-      }).catch(e => sendError(res, 400, 'BAD_REQUEST', e.message));
+      })).catch(e => sendMappedError(res, e));
       return;
     }
 
@@ -1957,6 +2189,17 @@ export function createServer({ projectRoot, sessionRegistry: sr, token: expected
       readJsonBody(req).then(async (payload) => {
         try {
           assertCanvasAgentSpawnAllowed(absRoot, payload, req.headers);
+          if (payload && payload.dispatchId !== undefined && payload.dispatchId !== null) {
+            // Dispatch workers use the installed typed CLI to report progress
+            // and results.  Give PTY/chat workers this request's real backend
+            // origin even when the caller did not know the ephemeral port.
+            const dispatched = await createDispatchedRuntimeSession(sr, absRoot, {
+              ...payload,
+              ...controlPlanePayload(url, expectedToken),
+            }, terminalHub, modelCapabilityProbe || nativeModelCapabilityProbe);
+            sendJson(res, dispatched.statusCode, dispatched.response);
+            return;
+          }
           const session = await createRuntimeSession(sr, absRoot, {
             ...payload,
             attachGraphNode: payload.attachGraphNode !== false,
@@ -2023,6 +2266,58 @@ export function createServer({ projectRoot, sessionRegistry: sr, token: expected
       runStop
         .then(result => sendJson(res, 200, result))
         .catch(e => sendError(res, 500, 'INTERNAL_ERROR', e.message));
+      return;
+    }
+
+    // Dispatch callers use the explicit cancel vocabulary.  It shares the
+    // existing stop/kill path so PTY ownership and cleanup remain centralized.
+    const cancelMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/cancel$/);
+    if (req.method === 'POST' && cancelMatch) {
+      if (!sr || typeof sr.stop !== 'function') {
+        return sendError(res, 501, 'NOT_IMPLEMENTED', 'Session registry not available');
+      }
+      const sessionId = cancelMatch[1];
+      const runCancel = typeof sr.withLock === 'function'
+        ? sr.withLock(sessionId, () => stopRuntimeSession(sr, absRoot, sessionId, terminalHub))
+        : Promise.resolve(stopRuntimeSession(sr, absRoot, sessionId, terminalHub));
+      runCancel
+        .then(result => {
+          const cancelled = result?.cancelled || result?.stopped || result?.saved || null;
+          sendJson(res, 200, {
+            ok: true,
+            cancelled: cancelled ? { ...cancelled, status: 'cancelled', dispatchStatus: cancelled.dispatchId ? 'cancelled' : cancelled.dispatchStatus } : null,
+            ...result,
+          });
+        })
+        .catch(e => sendMappedError(res, e));
+      return;
+    }
+
+    // A dispatched runtime reports lifecycle evidence through this typed
+    // control-plane route.  PTY bytes are deliberately not interpreted as a
+    // completion signal: only an explicit result envelope can settle a
+    // dispatch as succeeded/failed/cancelled.
+    const dispatchReportMatch = pathname.match(/^\/api\/dispatches\/([^/]+)\/(progress|result)$/);
+    if (req.method === 'POST' && dispatchReportMatch) {
+      readJsonBody(req).then(async (payload) => {
+        try {
+          const report = await recordDispatchReport(
+            sr,
+            absRoot,
+            decodeURIComponent(dispatchReportMatch[1]),
+            dispatchReportMatch[2],
+            payload,
+            terminalHub,
+            {
+              workerCapability: cleanString(req.headers['x-harness-worker-capability'], ''),
+              actorSessionId: cleanString(req.headers['x-harness-session-id'], ''),
+            },
+          );
+          sendJson(res, report.replayed ? 200 : 201, report);
+        } catch (e) {
+          sendMappedError(res, e);
+        }
+      }).catch(e => sendError(res, 400, 'BAD_REQUEST', e.message));
       return;
     }
 
@@ -2162,6 +2457,10 @@ export function createServer({ projectRoot, sessionRegistry: sr, token: expected
         try {
           const newSettings = JSON.parse(body);
           const current = loadSettings(absRoot);
+          // runtimeCapabilities is an operator-managed trust input. Ordinary
+          // settings mutations may preserve it, but HTTP callers cannot add,
+          // replace, delete, or structurally alter the declaration.
+          assertRuntimeCapabilitiesMutation(current, newSettings);
           const merged = mergePlainObjects(current, newSettings);
           const settingsPath = path.join(absRoot, 'Harness', 'settings.json');
           let existing = {};
@@ -2175,7 +2474,11 @@ export function createServer({ projectRoot, sessionRegistry: sr, token: expected
           fs.writeFileSync(settingsPath, JSON.stringify(nextSettings, null, 2));
           sendJson(res, 200, nextSettings);
         } catch (e) {
-          sendError(res, 400, 'BAD_REQUEST', e.message);
+          if (e?.code === 'RUNTIME_CAPABILITIES_INVALID' || e?.code === 'RUNTIME_CAPABILITIES_OPERATOR_ONLY') {
+            sendError(res, e.statusCode || 400, e.code, e.message);
+          } else {
+            sendError(res, 400, 'BAD_REQUEST', e.message);
+          }
         }
       });
       return;
@@ -2377,6 +2680,10 @@ async function stopRuntimeSession(sr, absRoot, sessionId, terminalHub = null) {
     if (disk && disk.runtime === 'claude' && disk.agentSessionId) {
       await materializeStoppedClaudeTranscript(absRoot, disk);
     }
+    if (disk?.dispatchId) {
+      const cancelled = { ...disk, status: 'cancelled', dispatchStatus: 'cancelled' };
+      return { ok: true, killed: false, cancelled, stopped: cancelled, saved: cancelled, alreadyStopped: true };
+    }
     return { ok: true, killed: false, stopped: null, saved: null, alreadyStopped: true };
   }
 
@@ -2406,12 +2713,14 @@ async function stopRuntimeSession(sr, absRoot, sessionId, terminalHub = null) {
     ...stopped,
     graphReplacedBySessionId: stopped.graphReplacedBySessionId || stoppedDisk.graphReplacedBySessionId || '',
     graphReplacedAt: stopped.graphReplacedAt || stoppedDisk.graphReplacedAt || '',
-    status: 'stopped',
+    status: stopped.dispatchId ? 'cancelled' : 'stopped',
+    dispatchStatus: stopped.dispatchId ? 'cancelled' : stopped.dispatchStatus,
     killed,
     wsClientCount: 0,
     stoppedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
+  dispatchCapsuleState(absRoot, updated, updated.dispatchId ? 'cancelled' : 'stopped', { killed });
   persistSession(absRoot, updated);
   updateWorkflowGraphSessionNode(absRoot, updated.sessionId, {
     status: 'stopped',
@@ -3852,6 +4161,34 @@ function workflowModeForCommand(command) {
   return normalized || 'wf';
 }
 
+function canonicalWorkflowMode(value) {
+  return String(value || '').trim().toLowerCase().replace(/^\/+/, '');
+}
+
+/**
+ * Keep task ownership and agent workflow mode aligned at the server boundary.
+ * A managed task inherits its mode when a task terminal is resumed without an
+ * explicit mode. Direct tasks may use non-durable capability modes, but they
+ * can never be bound to /wf or /wf-max after the fact.
+ */
+export function resolveTaskWorkflowMode(taskState, requestedMode, { taskId = null } = {}) {
+  const requested = canonicalWorkflowMode(requestedMode);
+  const taskMode = canonicalWorkflowMode(taskState?.mode) || 'direct';
+  const taskIsManaged = WF_MANAGED_MODES.has(taskMode);
+  const requestedIsManaged = WF_MANAGED_MODES.has(requested);
+
+  if (taskId && requestedIsManaged && !taskState) {
+    throw new Error(`Task "${taskId}" has no durable STATE.json; create or enter it with --mode ${requested} before binding it to WF.`);
+  }
+  if (taskIsManaged && requested && requested !== taskMode) {
+    throw new Error(`WF-managed task "${taskId || taskState.taskId || 'unknown'}" requires workflow mode "${taskMode}"; close it before starting a new task.`);
+  }
+  if (taskId && !taskIsManaged && requestedIsManaged) {
+    throw new Error(`Direct task "${taskId || taskState?.taskId || 'unknown'}" cannot be bound to durable WF mode "${requested}"; create a new task with --mode ${requested}.`);
+  }
+  return taskIsManaged ? taskMode : requested;
+}
+
 function nodeHomeRel(sessionId) {
   return `Harness/a2a/nodes/${sessionId}`;
 }
@@ -3954,6 +4291,9 @@ function nodeInitMarkdown(session) {
       : []),
     `- Objective: ${session.objective || 'none'}`,
     `- Env subagent mode: HARNESS_SUBAGENT_MODE=${session.subagentMode || ''} | Env: HARNESS_NODE_INIT=${session.nodeInitPath || ''} | HARNESS_PEER_SESSION_ID=${session.sessionId} | HARNESS_WORKFLOW_NODE_ID=${session.graphNodeId || ''}`,
+    ...(session.dispatchId
+      ? [`- Dispatch identity: ${session.dispatchId} | Attempt: ${Number(session.attempt || 0)} | Use HARNESS_WORKER_CAPABILITY from the process environment for reports.`]
+      : []),
     '',
     '## Working Method — discovery first',
     'You control the workflow canvas ONLY through typed interfaces. Never edit Harness/a2a/**/state.json or workflow-map.json directly.',
@@ -4047,6 +4387,25 @@ function runtimeInitialPrompt(session, payload) {
   return '';
 }
 
+function issueDispatchWorkerCapability(session) {
+  if (!session?.dispatchId) return;
+  // Keep the capability in the backend/worker process boundary only. A
+  // non-enumerable session property is intentionally excluded from STATE.json,
+  // peer capsules, event logs, API responses, and node-home metadata.
+  const binding = {
+    token: crypto.randomBytes(32).toString('base64url'),
+    dispatchId: session.dispatchId,
+    sessionId: session.sessionId,
+    attempt: Number(session.attempt || 0),
+  };
+  Object.defineProperty(session, 'workerCapability', {
+    value: binding,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
+}
+
 function writePtyInputSequence(sessionId, input) {
   const text = String(input || '');
   if (!text) return;
@@ -4095,8 +4454,626 @@ async function createWorkflowSession(sr, absRoot, payload, terminalHub = null) {
   }, terminalHub);
 }
 
+function dispatchRetryRequested(payload = {}) {
+  return payload.retry === true
+    || payload.dispatchRetry === true
+    || String(payload.retry || payload.dispatchRetry || '').toLowerCase() === 'true';
+}
+
+function persistedDispatchSession(absRoot, request) {
+  const expectedKey = dispatchCanonicalKey(request.payload);
+  const expectedFingerprint = request.fingerprint || dispatchFingerprint(request.payload, request.payload);
+  return listTerminalSessions(absRoot)
+    .filter((session) => session?.dispatchId === request.payload.dispatchId
+      && session?.taskId === request.payload.taskId)
+    .find((session) => (
+      session.dispatchKey === expectedKey
+      || session.dispatchFingerprint === expectedFingerprint
+      || !session.dispatchFingerprint
+    )) || null;
+}
+
+function dispatchRecordSession(sr, record) {
+  if (!record?.sessionId || !sr || typeof sr.get !== 'function') return null;
+  return sr.get(record.sessionId) || null;
+}
+
+function runtimeExitPatch(session, exitCode) {
+  if (session?.dispatchId) return { status: 'failed', dispatchStatus: 'failed', exitCode };
+  return { status: 'exited', exitCode };
+}
+
+function dispatchCapsuleEvent(absRoot, session, type, fields = {}) {
+  if (!session?.dispatchId || !session?.taskId || !session?.peerId) return;
+  try {
+    writePeerEvent(absRoot, session.taskId, session.peerId, {
+      type,
+      dispatchId: session.dispatchId,
+      sessionId: session.sessionId,
+      ...fields,
+      requestId: cleanString(session.dispatchRequestId, ''),
+      replyTo: cleanString(session.dispatchReplyTo, ''),
+    });
+  } catch {
+    // Peer capsules are an audit mirror; a failed mirror must not strand a
+    // running PTY or change the canonical session response.
+  }
+}
+
+function dispatchCapsuleState(absRoot, session, status, fields = {}) {
+  if (!session?.dispatchId || !session?.taskId || !session?.peerId) return;
+  try {
+    const terminal = ['succeeded', 'failed', 'cancelled', 'interrupted'].includes(status);
+    updatePeerState(absRoot, session.taskId, session.peerId, status, fields);
+    dispatchCapsuleEvent(absRoot, session, `dispatch.${status}`, fields);
+    if (terminal && status !== 'interrupted') {
+      writePeerResult(absRoot, session.taskId, session.peerId, {
+        dispatchId: session.dispatchId,
+        sessionId: session.sessionId,
+        status,
+        ...fields,
+        requestId: cleanString(session.dispatchRequestId, ''),
+        replyTo: cleanString(session.dispatchReplyTo, ''),
+      });
+    }
+  } catch {
+    // See dispatchCapsuleEvent: lifecycle persistence is best effort.
+  }
+}
+
+const DISPATCH_TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled', 'interrupted']);
+
+function isDispatchTerminal(session) {
+  return Boolean(session?.dispatchId
+    && DISPATCH_TERMINAL_STATUSES.has(String(session.dispatchStatus || session.status || '').toLowerCase()));
+}
+
+function dispatchReportEnvelope(payload = {}, session = null) {
+  const envelope = payload && isPlainObject(payload.envelope) ? payload.envelope : {};
+  const contextRefs = Array.isArray(payload.contextRefs)
+    ? payload.contextRefs
+    : (Array.isArray(envelope.contextRefs) ? envelope.contextRefs : []);
+  if (contextRefs.some((ref) => {
+    if (typeof ref === 'string') return !ref.trim();
+    return !ref || typeof ref !== 'object' || Array.isArray(ref) || !cleanString(ref.nodeId, '');
+  })) {
+    const error = new Error('contextRefs must contain node references only');
+    error.statusCode = 400;
+    error.code = 'BAD_CONTEXT_REFS';
+    throw error;
+  }
+  const suppliedRequestId = cleanString(payload.requestId || envelope.requestId, '');
+  const suppliedReplyTo = cleanString(payload.replyTo || envelope.replyTo, '');
+  const requestId = cleanString(session?.dispatchRequestId, '');
+  const replyTo = cleanString(session?.dispatchReplyTo, '');
+  if ((requestId && suppliedRequestId && requestId !== suppliedRequestId)
+    || (!requestId && suppliedRequestId)
+    || (replyTo && suppliedReplyTo && replyTo !== suppliedReplyTo)
+    || (!replyTo && suppliedReplyTo)) {
+    const error = new Error('dispatch report correlation does not match the canonical request');
+    error.statusCode = 409;
+    error.code = 'DISPATCH_CORRELATION_CONFLICT';
+    throw error;
+  }
+  return { requestId, replyTo, contextRefs };
+}
+
+function dispatchReportCandidates(sr, absRoot, dispatchId, taskId = '') {
+  const candidates = [];
+  const seen = new Set();
+  const add = (session) => {
+    if (!session?.sessionId || seen.has(session.sessionId)) return;
+    if (session.dispatchId !== dispatchId) return;
+    if (taskId && session.taskId !== taskId) return;
+    seen.add(session.sessionId);
+    candidates.push(session);
+  };
+  if (sr && typeof sr.getAll === 'function') sr.getAll().forEach(add);
+  listTerminalSessions(absRoot).forEach(add);
+  return candidates.sort((a, b) => {
+    const attempt = Number(b.attempt || 0) - Number(a.attempt || 0);
+    if (attempt) return attempt;
+    const bLive = ['starting', 'running'].includes(String(b.status || '').toLowerCase()) ? 1 : 0;
+    const aLive = ['starting', 'running'].includes(String(a.status || '').toLowerCase()) ? 1 : 0;
+    return bLive - aLive || String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
+  });
+}
+
+function dispatchReportSession(sr, absRoot, dispatchId, payload = {}) {
+  const taskId = cleanString(payload.taskId, '');
+  const sessionId = cleanString(payload.sessionId, '');
+  if (!sessionId) {
+    const error = new Error('dispatch report requires the service-injected worker session identity');
+    error.statusCode = 401;
+    error.code = 'DISPATCH_WORKER_UNAUTHORIZED';
+    throw error;
+  }
+  const allCandidates = dispatchReportCandidates(sr, absRoot, dispatchId);
+  const candidates = taskId
+    ? allCandidates.filter(session => session.taskId === taskId)
+    : allCandidates;
+  const selected = sessionId
+    ? candidates.find(session => session.sessionId === sessionId)
+    : candidates[0];
+  if (!selected) {
+    const error = (sessionId || taskId) && allCandidates.length > 0
+      ? new Error('sessionId does not belong to dispatchId')
+      : new Error(`No dispatched session found for dispatchId '${dispatchId}'`);
+    error.statusCode = (sessionId || taskId) && allCandidates.length > 0 ? 409 : 404;
+    error.code = (sessionId || taskId) && allCandidates.length > 0 ? 'DISPATCH_SESSION_CONFLICT' : 'DISPATCH_NOT_FOUND';
+    throw error;
+  }
+  if (sessionId && selected.sessionId !== sessionId) {
+    const error = new Error('sessionId does not belong to dispatchId');
+    error.statusCode = 409;
+    error.code = 'DISPATCH_SESSION_CONFLICT';
+    throw error;
+  }
+  return selected;
+}
+
+function validateDispatchWorkerBinding(sr, session, payload = {}, { workerCapability = '', actorSessionId = '' } = {}) {
+  const presentedSessionId = cleanString(payload.sessionId, '');
+  const actorId = cleanString(actorSessionId, '');
+  if (!presentedSessionId || presentedSessionId !== session?.sessionId || (actorId && actorId !== session.sessionId)) {
+    const error = new Error('dispatch report worker session identity does not match the current dispatch session');
+    error.statusCode = 401;
+    error.code = 'DISPATCH_WORKER_UNAUTHORIZED';
+    throw error;
+  }
+  const record = session?.dispatchKey && sr && typeof sr.getDispatch === 'function'
+    ? sr.getDispatch(session.dispatchKey)
+    : null;
+  if (!record
+    || record.sessionId !== session.sessionId
+    || Number(record.attempt || 0) !== Number(session.attempt || 0)) {
+    const error = new Error('dispatch report worker session is not the current dispatch attempt');
+    error.statusCode = 409;
+    error.code = 'DISPATCH_ATTEMPT_CONFLICT';
+    throw error;
+  }
+  const binding = session.workerCapability;
+  const presented = cleanString(workerCapability || payload.workerCapability, '');
+  const expected = cleanString(binding?.token || binding, '');
+  if (!expected || !presented) {
+    const error = new Error('dispatch report requires the service-injected worker capability');
+    error.statusCode = 401;
+    error.code = 'DISPATCH_WORKER_UNAUTHORIZED';
+    throw error;
+  }
+  const expectedBytes = Buffer.from(expected, 'utf8');
+  const presentedBytes = Buffer.from(presented, 'utf8');
+  if (expectedBytes.length !== presentedBytes.length
+    || !crypto.timingSafeEqual(expectedBytes, presentedBytes)
+    || binding?.dispatchId !== session.dispatchId
+    || binding?.sessionId !== session.sessionId
+    || Number(binding?.attempt || 0) !== Number(session.attempt || 0)) {
+    const error = new Error('dispatch report worker capability is invalid for the current dispatch attempt');
+    error.statusCode = 401;
+    error.code = 'DISPATCH_WORKER_UNAUTHORIZED';
+    throw error;
+  }
+}
+
+function normalizeDispatchResultStatus(value) {
+  const status = String(value || '').trim().toLowerCase();
+  if (['succeeded', 'success', 'completed', 'complete'].includes(status)) return 'succeeded';
+  if (['failed', 'error', 'failure'].includes(status)) return 'failed';
+  if (['cancelled', 'canceled', 'stopped'].includes(status)) return 'cancelled';
+  return '';
+}
+
+async function recordDispatchReport(sr, absRoot, dispatchId, kind, payload = {}, terminalHub = null, auth = {}) {
+  if (!dispatchId || !validateTaskId(dispatchId)) {
+    const error = new Error('dispatchId must be a safe identifier');
+    error.statusCode = 400;
+    error.code = 'BAD_DISPATCH';
+    throw error;
+  }
+  const run = async () => {
+    const session = dispatchReportSession(sr, absRoot, dispatchId, payload);
+    validateDispatchWorkerBinding(sr, session, payload, auth);
+    const currentStatus = String(session.dispatchStatus || session.status || 'starting').toLowerCase();
+    const envelope = dispatchReportEnvelope(payload, session);
+    if (kind === 'progress') {
+      if (DISPATCH_TERMINAL_STATUSES.has(currentStatus)) {
+        return {
+          ok: true,
+          replayed: true,
+          dispatchId,
+          sessionId: session.sessionId,
+          status: currentStatus,
+        };
+      }
+      const progress = payload.progress ?? payload.message ?? payload.text ?? payload.output ?? '';
+      if (typeof progress !== 'string' || !progress.trim()) {
+        const error = new Error('dispatch progress requires a non-empty progress/message/text string');
+        error.statusCode = 400;
+        error.code = 'BAD_DISPATCH_PROGRESS';
+        throw error;
+      }
+      const fields = {
+        dispatchId,
+        progress: String(progress),
+        ...envelope,
+      };
+      const updated = sr && typeof sr.get === 'function' && sr.get(session.sessionId)
+        ? (() => {
+          sr.update(session.sessionId, { status: 'running', dispatchStatus: 'running' });
+          const next = sr.get(session.sessionId);
+          next.dispatchProgress = [...(Array.isArray(next.dispatchProgress) ? next.dispatchProgress : []), fields];
+          return next;
+        })()
+        : { ...session, status: 'running', dispatchStatus: 'running', dispatchProgress: [...(session.dispatchProgress || []), fields] };
+      persistSession(absRoot, updated);
+      appendSessionEvent(absRoot, updated, { type: 'dispatch.progress', ...fields });
+      dispatchCapsuleEvent(absRoot, updated, 'dispatch.progress', fields);
+      terminalHub?.broadcastToSession?.(updated.sessionId, {
+        type: 'dispatch:progress',
+        dispatchId,
+        sessionId: updated.sessionId,
+        progress: String(progress),
+        requestId: envelope.requestId,
+        replyTo: envelope.replyTo,
+      });
+      return { ok: true, replayed: false, dispatchId, sessionId: updated.sessionId, status: 'running', progress: String(progress) };
+    }
+
+    const status = normalizeDispatchResultStatus(payload.status || payload.result?.status);
+    if (!status) {
+      const error = new Error('dispatch result requires explicit status succeeded, failed, or cancelled');
+      error.statusCode = 400;
+      error.code = 'BAD_DISPATCH_RESULT';
+      throw error;
+    }
+    if (DISPATCH_TERMINAL_STATUSES.has(currentStatus)) {
+      if (currentStatus === status) {
+        return { ok: true, replayed: true, dispatchId, sessionId: session.sessionId, status: currentStatus };
+      }
+      const error = new Error(`Dispatch is already terminal as ${currentStatus}`);
+      error.statusCode = 409;
+      error.code = 'DISPATCH_TERMINAL';
+      throw error;
+    }
+    const result = payload.result !== undefined
+      ? payload.result
+      : (payload.output !== undefined ? payload.output : payload.message ?? null);
+    const fields = {
+      dispatchId,
+      result,
+      output: payload.output,
+      ...envelope,
+    };
+    let updated;
+    if (sr && typeof sr.get === 'function' && sr.get(session.sessionId)) {
+      sr.update(session.sessionId, { status, dispatchStatus: status });
+      updated = sr.get(session.sessionId);
+    } else {
+      updated = { ...session, status, dispatchStatus: status };
+    }
+    updated.dispatchResult = fields;
+    persistSession(absRoot, updated);
+    appendSessionEvent(absRoot, updated, { type: 'dispatch.result', status, ...fields });
+    dispatchCapsuleState(absRoot, updated, status, fields);
+    // The reporter is an agent-owned child command running alongside the
+    // provider.  Once it has delivered terminal evidence, reclaim only the
+    // transport handle owned by this service; the lifecycle status above is
+    // preserved if the provider's exit callback arrives afterward.
+    if (updated.uiMode === 'chat') {
+      try { await disposeChatDriver(updated.sessionId, { reason: `dispatch-${status}` }); } catch { /* best effort */ }
+    } else {
+      killPtyProcess(updated.sessionId);
+    }
+    if (updated.graphNodeId) {
+      updateWorkflowGraphSessionNode(absRoot, updated.sessionId, { status, dispatchStatus: status, updatedAt: updated.updatedAt });
+    }
+    terminalHub?.broadcastToSession?.(updated.sessionId, {
+      type: 'dispatch:result',
+      dispatchId,
+      sessionId: updated.sessionId,
+      status,
+      result,
+      requestId: envelope.requestId,
+      replyTo: envelope.replyTo,
+    });
+    return { ok: true, replayed: false, dispatchId, sessionId: updated.sessionId, status, result };
+  };
+  const session = dispatchReportCandidates(sr, absRoot, dispatchId, cleanString(payload.taskId, ''))[0];
+  const lockKey = session?.dispatchKey || `dispatch-report:${dispatchId}`;
+  return sr && typeof sr.withDispatchLock === 'function'
+    ? sr.withDispatchLock(lockKey, run)
+    : run();
+}
+
+function ensureDispatchCapsule(absRoot, payload, session) {
+  if (!session?.dispatchId || !session?.taskId || !session?.peerId) return;
+  try {
+    createPeerCapsule(absRoot, session.taskId, session.peerId, {
+      ...payload,
+      dispatchId: session.dispatchId,
+      sessionId: session.sessionId,
+      graphNodeId: session.graphNodeId,
+      attempt: Number(session.attempt || 0),
+      modelCapabilitySourceKind: session.modelCapabilitySourceKind || null,
+      modelCapabilityVerificationLevel: session.modelCapabilityVerificationLevel || null,
+    });
+    dispatchCapsuleEvent(absRoot, session, 'dispatch.ack', {
+      status: 'starting',
+      requestId: cleanString(session.dispatchRequestId, ''),
+      replyTo: cleanString(session.dispatchReplyTo, ''),
+      requested: session.requested,
+      effective: session.effective,
+      modelCapabilitySourceKind: session.modelCapabilitySourceKind || null,
+      modelCapabilityVerificationLevel: session.modelCapabilityVerificationLevel || null,
+    });
+  } catch {
+    // Do not change runtime behavior if an optional audit directory is
+    // unavailable; the session/dispatch records remain authoritative.
+  }
+}
+
+function dispatchPathWithin(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === ''
+    || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function materializeDispatchContext(absRoot, payload) {
+  const rawPath = String(payload?.contextPackPath || '').trim();
+  if (!rawPath) return { ...payload, contextPackPath: '' };
+  const resolved = path.resolve(absRoot, rawPath);
+  if (!dispatchPathWithin(absRoot, resolved)) {
+    const error = new Error('contextPackPath must stay inside the project root');
+    error.statusCode = 422;
+    error.code = 'CONTEXT_OUTSIDE_PROJECT';
+    throw error;
+  }
+  // Lexical containment is not enough when a project contains a symlink. The
+  // pack is an input boundary, so resolve the existing target before reading
+  // it and reject a link that points outside the project root.
+  try {
+    const realRoot = fs.realpathSync(absRoot);
+    const realResolved = fs.realpathSync(resolved);
+    if (!dispatchPathWithin(realRoot, realResolved)) {
+      const error = new Error('contextPackPath must stay inside the project root');
+      error.statusCode = 422;
+      error.code = 'CONTEXT_OUTSIDE_PROJECT';
+      throw error;
+    }
+  } catch (error) {
+    if (error?.code === 'CONTEXT_OUTSIDE_PROJECT') throw error;
+    // The read/stat block below reports a stable unreadable-pack error.
+  }
+  let pack;
+  try {
+    if (!fs.statSync(resolved).isFile()) throw new Error('not a file');
+    pack = fs.readFileSync(resolved, 'utf8');
+  } catch {
+    const error = new Error(`contextPackPath could not be read: ${rawPath}`);
+    error.statusCode = 400;
+    error.code = 'CONTEXT_PACK_UNREADABLE';
+    throw error;
+  }
+  const prompt = String(payload.initialPrompt || '');
+  const separator = prompt && pack ? '\n\n--- Harness context pack ---\n' : '';
+  return {
+    ...payload,
+    contextPackPath: resolved,
+    initialPrompt: `${prompt}${separator}${pack}`,
+  };
+}
+
+/**
+ * Opt-in dispatch route.  The key lock is acquired before session creation so
+ * two callers racing with one dispatch envelope can never create two PTYs.
+ * The old POST /api/sessions path deliberately bypasses this function.
+ */
+function capabilityProbeFailure(error) {
+  if (error?.code === MODEL_CAPABILITY_CODES.UNSUPPORTED
+    || error?.code === MODEL_CAPABILITY_CODES.UNAVAILABLE
+    || error?.code === MODEL_CAPABILITY_CODES.UNVERIFIED) {
+    return error;
+  }
+  const mapped = new Error('Model capability probe is unavailable');
+  mapped.statusCode = 422;
+  mapped.code = MODEL_CAPABILITY_CODES.UNAVAILABLE;
+  mapped.details = {
+    sourceKind: 'none',
+    verificationLevel: 'unavailable',
+    reason: { code: 'MODEL_CAPABILITY_PROBE_FAILED', message: 'The trusted model capability probe failed.' },
+  };
+  return mapped;
+}
+
+function dispatchCapabilityDeadline() {
+  // Keep this deadline short and explicit in the constructor seam.  Native
+  // probes receive it and own cleanup of any process they create.
+  return Date.now() + 5000;
+}
+
+async function preflightDispatchModel(request, probe) {
+  const deadlineAt = dispatchCapabilityDeadline();
+  const args = {
+    runtime: request.requested.runtime,
+    model: request.requested.model,
+    effort: request.requested.effort,
+    projectRoot: request.payload.projectRoot,
+    deadlineAt,
+  };
+  let timer;
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const remaining = Math.max(1, deadlineAt - Date.now());
+      timer = setTimeout(() => {
+        const timeout = new Error('Model capability probe deadline elapsed');
+        timeout.statusCode = 422;
+        timeout.code = MODEL_CAPABILITY_CODES.UNAVAILABLE;
+        timeout.details = {
+          sourceKind: 'none',
+          verificationLevel: 'unavailable',
+          reason: { code: 'MODEL_CAPABILITY_TIMEOUT', message: 'The trusted model capability probe exceeded its deadline.' },
+        };
+        reject(timeout);
+      }, remaining);
+      timer.unref?.();
+      Promise.resolve()
+        .then(() => probe(args))
+        .then(resolve, reject);
+    });
+    return capabilityErrorFromProbe(result, {
+      runtime: request.requested.runtime,
+      model: request.requested.model,
+      effort: request.requested.effort,
+    });
+  } catch (error) {
+    throw capabilityProbeFailure(error);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function createDispatchedRuntimeSession(sr, absRoot, payload, terminalHub = null, capabilityProbe = nativeModelCapabilityProbe) {
+  const request = normalizeDispatchRequest(payload, { projectRoot: absRoot });
+  const lock = typeof sr.withDispatchLock === 'function'
+    ? sr.withDispatchLock.bind(sr)
+    : (key, fn) => sr.withLock(key, fn);
+
+  return lock(request.key, async () => {
+    let record = typeof sr.getDispatch === 'function' ? sr.getDispatch(request.key) : null;
+    let existing = dispatchRecordSession(sr, record);
+    if (!existing) existing = persistedDispatchSession(absRoot, request);
+
+    if (existing || record) {
+      const previousFingerprint = record?.fingerprint || existing?.dispatchFingerprint;
+      if (previousFingerprint && previousFingerprint !== request.fingerprint) {
+        const error = new Error('Dispatch key already exists with a different payload');
+        error.statusCode = 409;
+        error.code = 'DISPATCH_CONFLICT';
+        throw error;
+      }
+      const retry = dispatchRetryRequested(payload);
+      const previousAttempt = Number(record?.attempt ?? existing?.attempt ?? 0);
+      const previousStatus = String(record?.status || existing?.status || 'starting').toLowerCase();
+      if (retry && ['failed', 'cancelled', 'interrupted'].includes(previousStatus)) {
+        if (previousAttempt >= 1) {
+          const error = new Error('Dispatch retry already consumed; at most one explicit retry is allowed');
+          error.statusCode = 409;
+          error.code = 'DISPATCH_RETRY_EXHAUSTED';
+          throw error;
+        }
+        const modelCapability = await preflightDispatchModel(request, capabilityProbe);
+        const launchPayload = materializeDispatchContext(absRoot, request.payload);
+          const retried = await createRuntimeSession(sr, absRoot, {
+            ...launchPayload,
+            dispatchId: request.payload.dispatchId,
+            dispatchKey: request.key,
+            dispatchFingerprint: request.fingerprint,
+          attempt: previousAttempt + 1,
+          dispatchRequestId: request.payload.requestId || '',
+          dispatchReplyTo: request.payload.replyTo || '',
+          effortVariant: modelCapability.effortVariant || '',
+          requested: request.requested,
+          effective: request.requested,
+          retry: false,
+          modelCapabilitySourceKind: modelCapability.sourceKind,
+            modelCapabilityVerificationLevel: modelCapability.verificationLevel,
+            attachGraphNode: true,
+            uiMode: request.payload.transport === 'chat' ? 'chat' : 'pty',
+          }, terminalHub);
+        const next = sr.setDispatch(request.key, {
+          fingerprint: request.fingerprint,
+          dispatchId: request.payload.dispatchId,
+          taskId: request.payload.taskId,
+          projectRoot: request.payload.projectRoot,
+          sessionId: retried.sessionId,
+          attempt: previousAttempt + 1,
+          requestId: request.payload.requestId || '',
+          replyTo: request.payload.replyTo || '',
+          modelCapabilitySourceKind: modelCapability.sourceKind,
+          modelCapabilityVerificationLevel: modelCapability.verificationLevel,
+          status: retried.status,
+        });
+        void next;
+        return { statusCode: 201, response: dispatchResponse(retried, { requested: request.requested, effective: request.requested }) };
+      }
+
+      const replay = existing || dispatchRecordSession(sr, record);
+      if (replay) {
+        return {
+          statusCode: 200,
+          response: dispatchResponse(replay, { replayed: true, requested: request.requested, effective: replay.effective || request.requested }),
+        };
+      }
+    }
+
+    // Capability preflight is deliberately before dispatch state, context
+    // materialization, peer creation, and PTY/chat spawn.  A failed probe can
+    // therefore be retried without leaving a pseudo-successful dispatch.
+    const modelCapability = await preflightDispatchModel(request, capabilityProbe);
+
+    if (typeof sr.setDispatch === 'function') {
+      sr.setDispatch(request.key, {
+        fingerprint: request.fingerprint,
+        dispatchId: request.payload.dispatchId,
+        taskId: request.payload.taskId,
+        projectRoot: request.payload.projectRoot,
+        attempt: 0,
+        requestId: request.payload.requestId || '',
+        replyTo: request.payload.replyTo || '',
+        modelCapabilitySourceKind: modelCapability.sourceKind,
+        modelCapabilityVerificationLevel: modelCapability.verificationLevel,
+        status: 'starting',
+      });
+    }
+
+    const launchPayload = materializeDispatchContext(absRoot, request.payload);
+    const session = await createRuntimeSession(sr, absRoot, {
+      ...launchPayload,
+      dispatchId: request.payload.dispatchId,
+      dispatchKey: request.key,
+      dispatchFingerprint: request.fingerprint,
+      attempt: 0,
+      dispatchRequestId: request.payload.requestId || '',
+      dispatchReplyTo: request.payload.replyTo || '',
+      effortVariant: modelCapability.effortVariant || '',
+      requested: request.requested,
+      effective: request.requested,
+      modelCapabilitySourceKind: modelCapability.sourceKind,
+      modelCapabilityVerificationLevel: modelCapability.verificationLevel,
+      // Dispatch always creates a graph-backed node; this gives callers a
+      // stable graphNodeId without changing legacy terminal creation.
+      attachGraphNode: true,
+      uiMode: request.payload.transport === 'chat' ? 'chat' : 'pty',
+      parentSessionId: request.payload.parentSessionId || null,
+      contextPackPath: launchPayload.contextPackPath || '',
+      contextRefs: launchPayload.contextRefs || [],
+      initialPrompt: launchPayload.initialPrompt || '',
+    }, terminalHub);
+    if (typeof sr.setDispatch === 'function') {
+      sr.setDispatch(request.key, {
+        fingerprint: request.fingerprint,
+        dispatchId: request.payload.dispatchId,
+        taskId: request.payload.taskId,
+        projectRoot: request.payload.projectRoot,
+        sessionId: session.sessionId,
+        attempt: Number(session.attempt || 0),
+        requestId: request.payload.requestId || '',
+        replyTo: request.payload.replyTo || '',
+        modelCapabilitySourceKind: modelCapability.sourceKind,
+        modelCapabilityVerificationLevel: modelCapability.verificationLevel,
+        status: session.status,
+      });
+    }
+    return {
+      statusCode: 201,
+      response: dispatchResponse(session, { requested: request.requested, effective: request.requested }),
+    };
+  });
+}
+
 async function createRuntimeSession(sr, absRoot, payload, terminalHub = null) {
   const taskId = optionalTaskId(payload.taskId);
+  const taskState = taskId ? readTaskState(absRoot, taskId) : null;
   const runtime = resolveTaskRuntime(absRoot, taskId, cleanString(payload.runtime));
   if (!runtime) throw new Error('Runtime is required');
   const resumeArgs = Array.isArray(payload.resumeArgs) ? payload.resumeArgs : [];
@@ -4116,8 +5093,9 @@ async function createRuntimeSession(sr, absRoot, payload, terminalHub = null) {
   const role = cleanString(payload.role, 'terminal-agent');
   const objective = cleanString(payload.objective, 'Harness terminal agent');
   const subagentMode = cleanString(payload.subagentMode, 'built-in-subagents');
-  const workflowMode = cleanString(payload.workflowMode, '');
+  const workflowMode = resolveTaskWorkflowMode(taskState, payload.workflowMode, { taskId });
   const model = cleanString(payload.model, '');
+  const effortVariant = cleanString(payload.effortVariant, '');
   const provider = cleanString(payload.provider, '');
   const prompt = cleanString(payload.prompt, payload.objective || '');
   const customRole = cleanString(payload.customRole, '');
@@ -4194,7 +5172,26 @@ async function createRuntimeSession(sr, absRoot, payload, terminalHub = null) {
     graphContextPath: cleanString(payload.graphContextPath, currentGraph.graphContextPath || ''),
     parentAgentId: cleanString(payload.parentAgentId, '') || null,
     parentNodeId: cleanString(payload.parentNodeId, '') || null,
+    parentSessionId: cleanString(payload.parentSessionId, '') || null,
+    dispatchId: cleanString(payload.dispatchId, '') || null,
+    dispatchKey: cleanString(payload.dispatchKey, '') || null,
+    dispatchFingerprint: cleanString(payload.dispatchFingerprint, '') || null,
+    attempt: Number(payload.attempt || 0),
+    requested: payload.requested || null,
+    effective: payload.effective || null,
+    // Safe provenance only; the capability token itself remains a
+    // non-enumerable service/worker boundary value and is never persisted.
+    modelCapabilitySourceKind: payload.dispatchId ? (cleanString(payload.modelCapabilitySourceKind, '') || null) : null,
+    modelCapabilityVerificationLevel: payload.dispatchId ? (cleanString(payload.modelCapabilityVerificationLevel, '') || null) : null,
+    effort: cleanString(payload.effort, ''),
+    transport: cleanString(payload.transport, payload.uiMode === 'chat' ? 'chat' : 'pty'),
+    contextPackPath: cleanString(payload.contextPackPath, ''),
+    contextRefs: Array.isArray(payload.contextRefs) ? payload.contextRefs : [],
+    initialPrompt: cleanString(payload.initialPrompt, ''),
+    dispatchRequestId: cleanString(payload.dispatchRequestId, ''),
+    dispatchReplyTo: cleanString(payload.dispatchReplyTo, ''),
   });
+  issueDispatchWorkerCapability(session);
   if (attachGraphNode && !session.graphNodeId) {
     sr.update(session.sessionId, { graphNodeId: `session-${session.sessionId}` });
     session = sr.get(session.sessionId) || { ...session, graphNodeId: `session-${session.sessionId}` };
@@ -4251,6 +5248,7 @@ async function createRuntimeSession(sr, absRoot, payload, terminalHub = null) {
   sr.update(session.sessionId, nodeHome);
   session = sr.get(session.sessionId) || { ...session, ...nodeHome };
   persistSession(absRoot, session);
+  ensureDispatchCapsule(absRoot, payload, session);
   // HIGH-1: the create payload may carry an optional {position:{x,y}} (client
   // free-spot). It rides a transient copy — the registry session itself keeps
   // its fixed shape, so start/reload paths (which pass sr.get sessions with
@@ -4304,6 +5302,7 @@ async function createRuntimeSession(sr, absRoot, payload, terminalHub = null) {
       pendingInitialInputAt: new Date().toISOString(),
     } : {};
     persistSession(absRoot, updated, { hint: updated.blockedHint || runtimeInfo.hint, ...pendingInitialInput });
+    dispatchCapsuleState(absRoot, updated, 'failed', { reason: updated.blockedReason, hint: updated.blockedHint || runtimeInfo.hint });
     if (attachGraphNode) ensureRuntimeSessionGraphNode(absRoot, updated);
     appendSessionEvent(absRoot, updated, { type: 'session.blocked', reason: updated.blockedReason, hint: updated.blockedHint || runtimeInfo.hint });
     if (initialInput) {
@@ -4334,6 +5333,8 @@ async function createRuntimeSession(sr, absRoot, payload, terminalHub = null) {
       claudeAgentSessionId,
       isClaudeRuntime,
       model,
+      effort: cleanString(payload.effort, ''),
+      effortVariant,
       cwd,
       initialInput,
       attachGraphNode,
@@ -4349,6 +5350,8 @@ async function createRuntimeSession(sr, absRoot, payload, terminalHub = null) {
     commandArgs: resumeArgs,
     agentSessionId: isClaudeRuntime && resumeArgs.length === 0 ? claudeAgentSessionId : undefined,
     model,
+    effort: cleanString(payload.effort, ''),
+    effortVariant,
     initialPrompt,
     launchPolicy: session.launchPolicy,
     controlPlaneUrl: cleanString(payload.controlPlaneUrl, ''),
@@ -4362,6 +5365,11 @@ async function createRuntimeSession(sr, absRoot, payload, terminalHub = null) {
     graphContextPath: session.graphContextPath,
     nodeHomePath: session.nodeHomePath,
     nodeInitPath: session.nodeInitPath,
+    dispatchId: session.dispatchId,
+    dispatchAttempt: session.attempt,
+    workerCapability: session.workerCapability?.token || '',
+    requestId: session.dispatchRequestId,
+    replyTo: session.dispatchReplyTo,
     cols: session.cols,
     rows: session.rows,
     onData: (data) => {
@@ -4454,6 +5462,16 @@ async function createRuntimeSession(sr, absRoot, payload, terminalHub = null) {
           clearAgentNodeTerminalState(session.sessionId);
           return;
         }
+        // An explicit dispatch-result may settle the work while the provider
+        // is still unwinding its PTY.  Process exit is transport evidence, not
+        // permission to overwrite that terminal result with a second failure.
+        if (isDispatchTerminal(sr.get(session.sessionId))) {
+          persistSession(absRoot, sr.get(session.sessionId), { exitCode, signal });
+          unregisterPtyProcess(session.sessionId);
+          clearTerminalState(session.sessionId);
+          clearAgentNodeTerminalState(session.sessionId);
+          return;
+        }
         // Early-exit fallback: if the PTY exited within 8s of spawn AND this
         // was a resume attempt, retry once without resume args. This handles
         // "No conversation found with session ID" from Claude Code when the
@@ -4482,6 +5500,8 @@ async function createRuntimeSession(sr, absRoot, payload, terminalHub = null) {
             commandArgs: [],
             agentSessionId: isClaudeRuntime ? (claudeAgentSessionId || crypto.randomUUID()) : undefined,
             model,
+            effort: cleanString(payload.effort, ''),
+            effortVariant,
             initialPrompt,
             launchPolicy: session.launchPolicy,
             controlPlaneUrl: cleanString(payload.controlPlaneUrl, ''),
@@ -4495,6 +5515,11 @@ async function createRuntimeSession(sr, absRoot, payload, terminalHub = null) {
             graphContextPath: session.graphContextPath,
             nodeHomePath: session.nodeHomePath,
             nodeInitPath: session.nodeInitPath,
+            dispatchId: session.dispatchId,
+            dispatchAttempt: session.attempt,
+            workerCapability: session.workerCapability?.token || '',
+            requestId: session.dispatchRequestId,
+            replyTo: session.dispatchReplyTo,
             cols: session.cols,
             rows: session.rows,
             onData: (data) => {
@@ -4521,9 +5546,17 @@ async function createRuntimeSession(sr, absRoot, payload, terminalHub = null) {
                 clearAgentNodeTerminalState(session.sessionId);
                 return;
               }
-              sr.update(session.sessionId, { status: 'exited', exitCode: retryExitCode });
+              if (isDispatchTerminal(sr.get(session.sessionId))) {
+                persistSession(absRoot, sr.get(session.sessionId), { exitCode: retryExitCode, signal: retrySignal });
+                unregisterPtyProcess(session.sessionId);
+                clearTerminalState(session.sessionId);
+                clearAgentNodeTerminalState(session.sessionId);
+                return;
+              }
+              sr.update(session.sessionId, runtimeExitPatch(sr.get(session.sessionId), retryExitCode));
               const current = sr.get(session.sessionId);
               persistSession(absRoot, current, { signal: retrySignal });
+              dispatchCapsuleState(absRoot, current, current?.dispatchId ? 'failed' : 'exited', { exitCode: retryExitCode, signal: retrySignal });
               appendSessionEvent(absRoot, current, { type: 'session.exited', exitCode: retryExitCode, signal: retrySignal });
               terminalHub?.broadcastToSession?.(session.sessionId, {
                 type: 'session:state',
@@ -4546,14 +5579,18 @@ async function createRuntimeSession(sr, absRoot, payload, terminalHub = null) {
             trackTerminalSpawn(session.sessionId);
             trackAgentNodeTerminalSpawn(session.sessionId);
           }).catch(() => {
-            sr.update(session.sessionId, { status: 'exited', exitCode });
-            persistSession(absRoot, sr.get(session.sessionId));
+            if (isDispatchTerminal(sr.get(session.sessionId))) return;
+            sr.update(session.sessionId, runtimeExitPatch(sr.get(session.sessionId), exitCode));
+            const failed = sr.get(session.sessionId);
+            persistSession(absRoot, failed);
+            dispatchCapsuleState(absRoot, failed, failed?.dispatchId ? 'failed' : 'exited', { exitCode });
           });
           return;
         }
-        sr.update(session.sessionId, { status: 'exited', exitCode });
+        sr.update(session.sessionId, runtimeExitPatch(sr.get(session.sessionId), exitCode));
         const current = sr.get(session.sessionId);
         persistSession(absRoot, current, { signal });
+        dispatchCapsuleState(absRoot, current, current?.dispatchId ? 'failed' : 'exited', { exitCode, signal });
         appendSessionEvent(absRoot, current, { type: 'session.exited', exitCode, signal });
         terminalHub?.broadcastToSession?.(session.sessionId, {
           type: 'session:state',
@@ -4590,6 +5627,7 @@ async function createRuntimeSession(sr, absRoot, payload, terminalHub = null) {
   sr.update(session.sessionId, { status: 'running', pid: spawned.pid, ptyProvider: spawned.ptyProvider || null });
   const updated = sr.get(session.sessionId);
   persistSession(absRoot, updated);
+  dispatchCapsuleState(absRoot, updated, 'running', { pid: spawned.pid });
   if (attachGraphNode) ensureRuntimeSessionGraphNode(absRoot, updated);
   appendSessionEvent(absRoot, updated, { type: 'session.running', pid: spawned.pid, ptyProvider: spawned.ptyProvider || null });
   registerPtyProcess(session.sessionId, spawned.ptyProcess);
@@ -4626,12 +5664,19 @@ async function spawnChatRuntimeSession({
   claudeAgentSessionId,
   isClaudeRuntime,
   model,
+  effort,
+  effortVariant,
   cwd,
   initialInput,
   attachGraphNode,
 }) {
   const launchArgs = [
-    ...resolveRuntimeLaunchArgs(runtime, { model, launchPolicy: session.launchPolicy }),
+    ...resolveRuntimeLaunchArgs(runtime, {
+      model,
+      effort,
+      effortVariant,
+      launchPolicy: session.launchPolicy,
+    }),
     ...resumeArgs,
   ];
   if (isClaudeRuntime && resumeArgs.length === 0 && claudeAgentSessionId) {
@@ -4650,6 +5695,11 @@ async function spawnChatRuntimeSession({
     taskId: session.taskId || '',
     peerId: session.peerId,
     sessionId: session.sessionId,
+    dispatchId: session.dispatchId || '',
+    dispatchAttempt: session.attempt,
+    workerCapability: session.workerCapability?.token || '',
+    requestId: session.dispatchRequestId,
+    replyTo: session.dispatchReplyTo,
   }, { term: 'dumb' });
 
   let initialInputSent = false;
@@ -4681,6 +5731,8 @@ async function spawnChatRuntimeSession({
         cwd,
         env,
         model,
+        effort,
+        effortVariant,
         providerSessionId: session.agentSessionId || '',
         onSessionReady: (providerSessionId) => {
           // Same pattern as the codex/opencode agentSessionId capture:
@@ -4699,11 +5751,12 @@ async function spawnChatRuntimeSession({
         },
         onEnded: () => {
           const current = sr.get(session.sessionId);
-          if (!current || ['exited', 'stopped', 'blocked'].includes(current.status)) return;
-          sr.update(current.sessionId, { status: 'exited' });
+          if (!current || ['exited', 'stopped', 'blocked'].includes(current.status) || isDispatchTerminal(current)) return;
+          sr.update(current.sessionId, runtimeExitPatch(current));
           const updated = sr.get(current.sessionId);
           if (!updated) return;
           persistSession(absRoot, updated);
+          dispatchCapsuleState(absRoot, updated, 'failed', { reason: 'chat-driver-ended' });
           appendSessionEvent(absRoot, updated, { type: 'session.exited', reason: 'chat-driver-ended' });
         },
       });
@@ -4715,6 +5768,7 @@ async function spawnChatRuntimeSession({
     sr.update(session.sessionId, { status: 'blocked', blockedReason: 'chat-driver-spawn-failed', blockedHint: String(err?.message || err) });
     const updated = sr.get(session.sessionId);
     persistSession(absRoot, updated, { hint: updated.blockedHint });
+    dispatchCapsuleState(absRoot, updated, 'failed', { reason: 'chat-driver-spawn-failed', hint: updated.blockedHint });
     if (attachGraphNode) ensureRuntimeSessionGraphNode(absRoot, updated);
     appendSessionEvent(absRoot, updated, {
       type: 'session.blocked',
@@ -4727,6 +5781,7 @@ async function spawnChatRuntimeSession({
   sr.update(session.sessionId, { status: 'running', pid: startedHandle.pid, ptyProvider: 'chat-stdio' });
   const updated = sr.get(session.sessionId);
   persistSession(absRoot, updated);
+  dispatchCapsuleState(absRoot, updated, 'running', { pid: startedHandle.pid });
   if (attachGraphNode) ensureRuntimeSessionGraphNode(absRoot, updated);
   appendSessionEvent(absRoot, updated, { type: 'session.running', pid: startedHandle.pid, ptyProvider: 'chat-stdio' });
   trackTerminalSpawn(session.sessionId);
@@ -4804,6 +5859,7 @@ export function startServer(opts = {}) {
     token,
     terminalHub: opts.terminalHub || null,
     wfBrowserHub: opts.wfBrowserHub || null,
+    modelCapabilityProbe: typeof opts.modelCapabilityProbe === 'function' ? opts.modelCapabilityProbe : null,
   });
   const cleanupTimer = startCleanupScheduler(projectRoot, opts.sessionRegistry);
   if (cleanupTimer) server.once('close', () => clearInterval(cleanupTimer));
@@ -4825,6 +5881,19 @@ export function startServer(opts = {}) {
         buildSessionIndex(projectRoot);
         const downgraded = persistOrphanDowngradeAtStartup(projectRoot);
         if (downgraded.length > 0) console.log(`[wf-ui] downgraded ${downgraded.length} orphaned live session(s)`);
+        // A dispatched PTY cannot be reattached merely because its disk record
+        // exists.  Make the loss explicit so the caller must opt into retry.
+        for (const disk of listTerminalSessions(projectRoot)) {
+          if (!disk?.dispatchId || !downgraded.includes(disk.sessionId)) continue;
+          const updated = persistSession(projectRoot, disk, {
+            status: 'interrupted',
+            dispatchStatus: 'interrupted',
+            blockedReason: disk.blockedReason || 'backend-restarted-without-live-handle',
+          });
+          dispatchCapsuleState(projectRoot, updated, 'interrupted', {
+            reason: 'backend-restarted-without-live-handle',
+          });
+        }
       } catch (e) {
         console.error('[wf-ui] startup session reconciliation failed:', e?.message || e);
       }
