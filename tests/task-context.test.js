@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -8,12 +8,18 @@ import { makeHarnessTempRoot } from './support/temp-root.js';
 const repoRoot = path.resolve('.');
 const fixtureRoot = path.resolve('tests/fixtures/harness-092/project');
 const script = path.resolve('Harness/scripts/task-context.mjs');
+const tempRoots = new Set();
 
 function project(prefix = 'task-context-') {
   const root = makeHarnessTempRoot(prefix);
+  tempRoots.add(root);
   fs.cpSync(fixtureRoot, root, { recursive: true });
   return root;
 }
+
+after(() => {
+  for (const root of tempRoots) fs.rmSync(root, { recursive: true, force: true });
+});
 
 function input(root, name, value) {
   const file = path.join(root, `${name}.json`);

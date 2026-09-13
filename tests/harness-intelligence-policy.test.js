@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,9 +7,11 @@ import { makeHarnessTempRoot } from './support/temp-root.js';
 
 const repoRoot = path.resolve('.');
 const bin = path.resolve('bin/create-harness-vibe-coding.js');
+const tempRoots = new Set();
 
 function installProject(prefix = 'harness-intelligence-policy-') {
   const parent = makeHarnessTempRoot(prefix);
+  tempRoots.add(parent);
   const target = path.join(parent, 'project');
   const result = spawnSync(process.execPath, [bin, 'policy-install', target, '-y', '--install-scope', 'project', '--json'], {
     cwd: repoRoot,
@@ -18,6 +20,10 @@ function installProject(prefix = 'harness-intelligence-policy-') {
   assert.equal(result.status, 0, result.stderr || result.stdout);
   return target;
 }
+
+after(() => {
+  for (const root of tempRoots) fs.rmSync(root, { recursive: true, force: true });
+});
 
 function read(root, relative) {
   const file = path.join(root, relative);

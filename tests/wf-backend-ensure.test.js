@@ -75,9 +75,24 @@ async function health(url) {
   return { status: response.status, body: await response.json() };
 }
 
-function stopOwnedServer(result) {
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function stopOwnedServer(result) {
   const pid = Number(result?.pid);
-  if (!Number.isInteger(pid) || pid <= 0) return Promise.resolve();
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  try { process.kill(pid, 'SIGTERM'); } catch {}
+  const deadline = Date.now() + 5000;
+  while (processAlive(pid) && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  if (!processAlive(pid)) return;
   if (process.platform === 'win32') {
     return new Promise(resolve => {
       const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
@@ -86,13 +101,16 @@ function stopOwnedServer(result) {
     });
   } else {
     try { process.kill(pid, 'SIGTERM'); } catch {}
-    return Promise.resolve();
+    return;
   }
 }
 
 afterEach(async () => {
   await Promise.all([...liveServers.values()].map(stopOwnedServer));
   liveServers.clear();
+  // Detached Windows servers release their project handles shortly after the
+  // process exits; give the filesystem a bounded settling window before rm.
+  await new Promise(resolve => setTimeout(resolve, 1000));
   for (const root of roots) {
     try { fs.rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); } catch {}
   }

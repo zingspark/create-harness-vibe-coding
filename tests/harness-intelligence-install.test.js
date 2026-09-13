@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -8,9 +8,11 @@ import { makeHarnessTempRoot } from './support/temp-root.js';
 const repoRoot = path.resolve('.');
 const bin = path.resolve('bin/create-harness-vibe-coding.js');
 const fixtureRoot = path.resolve('tests/fixtures/harness-intelligence-install/project');
+const tempRoots = new Set();
 
 function installProject(prefix = 'harness-intelligence-install-') {
   const parent = makeHarnessTempRoot(prefix);
+  tempRoots.add(parent);
   const target = path.join(parent, 'project');
   const result = spawnSync(process.execPath, [
     bin,
@@ -26,6 +28,10 @@ function installProject(prefix = 'harness-intelligence-install-') {
   fs.cpSync(path.join(fixtureRoot, 'Harness', 'memory'), path.join(target, 'Harness', 'memory'), { recursive: true });
   return target;
 }
+
+after(() => {
+  for (const root of tempRoots) fs.rmSync(root, { recursive: true, force: true });
+});
 
 function runInstalled(root, scriptName, args) {
   const script = path.join(root, 'Harness', 'scripts', scriptName);
