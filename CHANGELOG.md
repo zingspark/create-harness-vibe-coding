@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.9.4] - 2026-09-14
+
+- Publish the verified mainline as a clean, reproducible maintenance release with synchronized template manifests and package metadata.
+- Keep the existing wf-ui agent terminal, wf-search, cross-runtime command surfaces, and installation safeguards covered by the release validation suite.
+
 ## [0.9.3] - 2026-09-13
 
 - Add `/wf-search` as a direct, cross-runtime evidence-backed research command with fact, verify, compare, and troubleshoot modes.

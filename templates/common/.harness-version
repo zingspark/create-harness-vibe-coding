@@ -1,18 +1,15 @@
 {
-  "generator": "0.9.3",
-  "generated": "2026-09-13T11:50:39.650Z",
+  "generator": "0.9.4",
+  "generated": "2026-09-14T04:01:46.796Z",
   "options": [],
   "autoCheck": true,
   "source": "https://raw.githubusercontent.com/LiWeny16/create-harness-vibe-coding/main/templates/common/",
   "releaseNotes": {
-    "version": "0.9.3",
-    "date": "2026-09-13",
+    "version": "0.9.4",
+    "date": "2026-09-14",
     "highlights": [
-      "Add `/wf-search` as a direct, cross-runtime evidence-backed research command with fact, verify, compare, and troubleshoot modes.",
-      "Add stateless ledger validation and Markdown rendering with bounded search/read budgets, citation integrity, uncertainty handling, URL normalization, and safe escaping.",
-      "Add project/global runtime discovery, optional controller-only save targets, task evidence indexing, and protection for `Harness/research/search/**` during updates and removal.",
-      "Register the command across Claude Code, OpenCode, and Codex compatibility surfaces with mirrored Skill references and installation coverage.",
-      "Preserve the verified wf-ui runtime and agent-terminal behavior while extending the release checks for the new command."
+      "Publish the verified mainline as a clean, reproducible maintenance release with synchronized template manifests and package metadata.",
+      "Keep the existing wf-ui agent terminal, wf-search, cross-runtime command surfaces, and installation safeguards covered by the release validation suite."
     ]
   },
   "moves": [
@@ -317,7 +314,7 @@
     "Harness/a2a/skills/workflow-skill-group-node.json": "sha256-98d43dd9b9183b1e976e02cecd3a2302a152ceb77fc540dad10be959c5d56725",
     "Harness/a2a/skills/workflow-timer-node.json": "sha256-a195c46ee5c0231bd2970ccf4e81b355f982aedc87b46fdb93dbe2c886e6fa95",
     "Harness/a2a/workflows.json": "sha256-31501e2b022ee95f745131d7776ae7b4342e3e3431d50f47adc81a60dfbb7b69",
-    "Harness/ownership.manifest.json": "sha256-4d797565861af0ffeed03f225ad2f8729ac396a22b693e53203da1525488aeb7",
+    "Harness/ownership.manifest.json": "sha256-d1b44142b74fc559ac332497b3595b7c1705ece59adb6ba5423e3b61a6d56435",
     "Harness/project/architecture.md": "sha256-35fbf29a3ad7357cfa3aa74800db2b7c98337709ec111fe73009f4724fc747c8",
     "Harness/research/README.md": "sha256-7cfe4678bf1c2227f3e23c6ffdac48079e06c39cc3c366b10631392615fb3d59",
     "Harness/scripts/README.md": "sha256-928febc2ce3df0495f9a9ad827feab933e1e67dc22699f1642a44f8d6fbaac64",
